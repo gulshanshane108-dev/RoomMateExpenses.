@@ -16,8 +16,10 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardType
+import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.unit.dp
 import com.google.firebase.FirebaseApp
+import com.google.firebase.auth.EmailAuthProvider
 import com.google.firebase.auth.FirebaseAuth
 import com.google.firebase.database.*
 import java.text.SimpleDateFormat
@@ -45,6 +47,12 @@ class MainActivity : ComponentActivity() {
     val auth = remember { FirebaseAuth.getInstance() }
     val db = remember { FirebaseDatabase.getInstance().reference }
     var uid by remember { mutableStateOf(auth.currentUser?.uid.orEmpty()) }
+    var signedIn by remember { mutableStateOf(auth.currentUser != null) }
+    var email by remember { mutableStateOf("") }
+    var password by remember { mutableStateOf("") }
+    var linkEmail by remember { mutableStateOf("") }
+    var linkPassword by remember { mutableStateOf("") }
+    var busy by remember { mutableStateOf(false) }
     var roomId by remember { mutableStateOf("") }
     var myName by remember { mutableStateOf("") }
     var whatsapp by remember { mutableStateOf("") }
@@ -61,8 +69,31 @@ class MainActivity : ComponentActivity() {
     var editing by remember { mutableStateOf<Expense?>(null) }
 
     LaunchedEffect(Unit) {
-        if (auth.currentUser == null) auth.signInAnonymously().addOnSuccessListener { uid = it.user?.uid.orEmpty(); message = "You're connected" }.addOnFailureListener { message = "Connection error: ${it.message}" }
-        else { uid = auth.currentUser?.uid.orEmpty(); message = "You're connected" }
+        val user = auth.currentUser
+        if (user != null) {
+            uid = user.uid
+            signedIn = true
+            message = "You're connected"
+        } else {
+            signedIn = false
+            message = "Sign in to continue"
+        }
+    }
+
+    fun signIn() {
+        if (email.isBlank() || password.isBlank()) { message = "Enter email and password"; return }
+        busy = true
+        auth.signInWithEmailAndPassword(email.trim(), password)
+            .addOnSuccessListener { busy = false; uid = it.user?.uid.orEmpty(); signedIn = true; message = "You're connected" }
+            .addOnFailureListener { busy = false; message = it.message ?: "Sign in failed" }
+    }
+
+    fun signUp() {
+        if (email.isBlank() || password.isBlank()) { message = "Enter email and password"; return }
+        busy = true
+        auth.createUserWithEmailAndPassword(email.trim(), password)
+            .addOnSuccessListener { busy = false; uid = it.user?.uid.orEmpty(); signedIn = true; message = "Account created — you're connected" }
+            .addOnFailureListener { busy = false; message = it.message ?: "Could not create account" }
     }
 
     fun watchRoom(id: String) {
@@ -110,7 +141,9 @@ class MainActivity : ComponentActivity() {
     val total = monthExpenses.sumOf { it.amount }; val personalTotal = monthExpenses.filter { it.memberUid == uid }.sumOf { it.amount }
     fun money(n: Double) = "₹" + String.format(Locale("en", "IN"), "%,.2f", n)
 
-    if (roomId.isBlank()) {
+    if (!signedIn) {
+        LoginScreen(email, { email = it }, password, { password = it }, message, busy, { signIn() }, { signUp() })
+    } else if (roomId.isBlank()) {
         Column(Modifier.fillMaxSize().background(Pale).padding(22.dp), verticalArrangement = Arrangement.Center) {
             Text("RoomMate", color = Purple, style = MaterialTheme.typography.headlineLarge, fontWeight = FontWeight.ExtraBold)
             Text("EXPENSES", color = Purple, style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
@@ -128,6 +161,13 @@ class MainActivity : ComponentActivity() {
                 }
             }
             Spacer(Modifier.height(12.dp)); Text(message, color = Purple, style = MaterialTheme.typography.bodySmall)
+            TextButton(onClick = {
+                auth.signOut()
+                signedIn = false
+                email = ""
+                password = ""
+                message = "Signed out"
+            }) { Text("Sign out") }
         }
     } else {
         Column(Modifier.fillMaxSize().background(Color(0xFFFAF9FC))) {
@@ -164,6 +204,34 @@ class MainActivity : ComponentActivity() {
                 else -> Column(Modifier.weight(1f).padding(20.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
                     Text("Your profile", style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold)
                     Card { Column(Modifier.padding(16.dp)) { Text(myName, style = MaterialTheme.typography.titleLarge); Text(whatsapp, color = Color.Gray); Text(if (isAdmin) "Room admin" else "Room member", color = Purple) } }
+                    val user = auth.currentUser
+                    Card(Modifier.fillMaxWidth()) {
+                        Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                            Text("Account", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
+                            Text(user?.email ?: "Guest / anonymous account", color = Color.Gray, style = MaterialTheme.typography.bodySmall)
+                            if (user != null && user.isAnonymous) {
+                                OutlinedTextField(linkEmail, { linkEmail = it }, label = { Text("Email for permanent account") }, keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Email), modifier = Modifier.fillMaxWidth(), singleLine = true)
+                                OutlinedTextField(linkPassword, { linkPassword = it }, label = { Text("Choose a password") }, visualTransformation = PasswordVisualTransformation(), keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password), modifier = Modifier.fillMaxWidth(), singleLine = true)
+                                Button(onClick = {
+                                    if (linkEmail.isBlank() || linkPassword.isBlank()) { message = "Enter email and password"; return@Button }
+                                    busy = true
+                                    user.linkWithCredential(EmailAuthProvider.getCredential(linkEmail.trim(), linkPassword))
+                                        .addOnSuccessListener { busy = false; message = "Account saved permanently"; linkEmail = ""; linkPassword = "" }
+                                        .addOnFailureListener { busy = false; message = it.message ?: "Could not save account" }
+                                }, enabled = !busy, modifier = Modifier.fillMaxWidth()) { Text("Make account permanent") }
+                            }
+                            TextButton(onClick = {
+                                auth.signOut()
+                                signedIn = false
+                                roomId = ""
+                                invite = ""
+                                expenses = emptyList()
+                                members = emptyList()
+                                tab = "Home"
+                                message = "Signed out"
+                            }) { Text("Sign out") }
+                        }
+                    }
                     Text("Your total this month", color = Color.Gray); Text(money(personalTotal), style = MaterialTheme.typography.headlineMedium, color = Purple, fontWeight = FontWeight.Bold)
                     Text("Room code: $invite")
                     Text("RoomMate Expenses · INR (₹)", color = Color.Gray)
@@ -176,10 +244,39 @@ class MainActivity : ComponentActivity() {
     }
 }
 
+@Composable private fun LoginScreen(
+    email: String,
+    onEmailChange: (String) -> Unit,
+    password: String,
+    onPasswordChange: (String) -> Unit,
+    message: String,
+    busy: Boolean,
+    onSignIn: () -> Unit,
+    onSignUp: () -> Unit
+) {
+    Column(Modifier.fillMaxSize().background(Pale).padding(22.dp), verticalArrangement = Arrangement.Center) {
+        Text("RoomMate", color = Purple, style = MaterialTheme.typography.headlineLarge, fontWeight = FontWeight.ExtraBold)
+        Text("EXPENSES", color = Purple, style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
+        Spacer(Modifier.height(8.dp))
+        Text("Sign in to protect your account and expenses.", style = MaterialTheme.typography.bodyLarge)
+        Spacer(Modifier.height(24.dp))
+        Card(shape = RoundedCornerShape(24.dp), elevation = CardDefaults.cardElevation(3.dp)) {
+            Column(Modifier.padding(18.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                OutlinedTextField(email, onEmailChange, label = { Text("Email") }, keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Email), modifier = Modifier.fillMaxWidth(), singleLine = true)
+                OutlinedTextField(password, onPasswordChange, label = { Text("Password") }, visualTransformation = PasswordVisualTransformation(), keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password), modifier = Modifier.fillMaxWidth(), singleLine = true)
+                Button(onClick = onSignIn, enabled = !busy, modifier = Modifier.fillMaxWidth().height(50.dp)) { Text("Sign in") }
+                OutlinedButton(onClick = onSignUp, enabled = !busy, modifier = Modifier.fillMaxWidth().height(50.dp)) { Text("Create account") }
+            }
+        }
+        Spacer(Modifier.height(12.dp))
+        Text(message, color = Purple, style = MaterialTheme.typography.bodySmall)
+    }
+}
+
 @Composable private fun SummaryTile(title: String, value: String, modifier: Modifier = Modifier) { Card(modifier, shape = RoundedCornerShape(18.dp)) { Column(Modifier.padding(14.dp)) { Text(title, color = Color.Gray, style = MaterialTheme.typography.labelMedium); Text(value, color = Purple, style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold) } } }
 
 @Composable private fun ExpenseRow(e: Expense, money: (Double) -> String, onEdit: () -> Unit, onDelete: () -> Unit) {
     Card(shape = RoundedCornerShape(16.dp), modifier = Modifier.padding(vertical = 4.dp)) { Column(Modifier.padding(horizontal = 14.dp, vertical = 10.dp)) { Row(verticalAlignment = Alignment.CenterVertically) { Column(Modifier.weight(1f)) { Text(e.item, fontWeight = FontWeight.SemiBold); Text("${e.memberName} · ${e.category}", color = Color.Gray, style = MaterialTheme.typography.bodySmall) }; Text(money(e.amount), color = Purple, fontWeight = FontWeight.Bold) }; Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) { TextButton(onClick = onEdit) { Text("Edit") }; TextButton(onClick = onDelete) { Text("Delete", color = Color.Red) } } } }
 }
 
-@Composable private fun EmptyState(title: String, body: String) { Column(Modifier.fillMaxWidth().padding(24.dp), horizontalAlignment = Alignment.CenterHorizontally) { Text(title, fontWeight = FontWeight.Bold); Text(body, color = Color.Gray) } }
+@Composable private fun EmptyState(title: String, body: String) { Column(Modifier.fillMaxWidth().padding(24.dp), horizontalAlignment = Alignment.CenterHorizontally) { Text(title, fontWeight = FontWeight.Bold); Text(body, color = Color.Gray, style = MaterialTheme.typography.bodySmall) } }
