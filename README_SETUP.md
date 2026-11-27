@@ -5,6 +5,8 @@ Android app built with Kotlin, Jetpack Compose, Firebase Email/Password Authenti
 ## Included in this build
 - Purple and white Material 3 interface
 - **Complete Email/Password authentication: Sign in, Create account, and Forgot password**
+- Sign-up collects name, mobile number, email and password; the profile is stored under `users/{uid}/profile`
+- Create room asks only for a room name; joining asks only for the 6-digit room code
 - Email format validation, 8+ character password rule, confirm password, and show/hide password controls
 - Friendly authentication error messages and disabled buttons while a request is running
 - **Link an existing anonymous account to email/password so its UID, rooms and expenses are preserved**
@@ -30,7 +32,7 @@ Android app built with Kotlin, Jetpack Compose, Firebase Email/Password Authenti
 4. Optional: customize **Templates → Password reset** and **Verify email** so users recognize the messages.
 5. Keep **Anonymous** enabled only if you still have existing guest accounts to migrate; the app now opens on a sign-in screen for new users, and the Profile tab lets an existing guest link an email/password to keep the same UID.
 6. Create a Realtime Database and verify its URL/region in Firebase.
-7. Publish database rules appropriate to your test and production needs. The included `firebase-database.rules.json` requires `auth != null` for room reads/writes, restricts room reads to members, lets a user write only their own member record, and allows a user to read/write only their own `personalExpenses`. Publish the updated rules file before testing personal mode.
+7. Publish database rules appropriate to your test and production needs. The included `firebase-database.rules.json` requires `auth != null` for room reads/writes, restricts room reads to members, lets a user write only their own member record, and allows a user to read/write only their own `profile` and `personalExpenses`. Publish the updated rules file before testing sign-up profiles or personal mode.
 
 The included rules file is a starting point, not a security audit. In particular, the invite-code lookup and write permissions need a trusted backend design before real users rely on the app. Do not use public read/write rules for a deployed app. WhatsApp numbers are user-entered and are not verified by this app.
 
