@@ -7,6 +7,8 @@ import androidx.activity.compose.setContent
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardOptions
@@ -41,6 +43,8 @@ private val Pale = Color(0xFFF4F0FC)
 private val EmailPattern = Regex("^[A-Za-z0-9+_.-]+@[A-Za-z0-9.-]+\\.[A-Za-z]{2,}$")
 
 private fun isValidEmail(value: String) = EmailPattern.matches(value.trim())
+
+private fun isValidPhone(value: String) = value.trim().count { it.isDigit() } in 10..15
 
 private fun passwordIssue(value: String): String? = when {
     value.length < 8 -> "Password must be at least 8 characters"
@@ -78,6 +82,8 @@ class MainActivity : ComponentActivity() {
     val db = remember { FirebaseDatabase.getInstance().reference }
     var uid by remember { mutableStateOf(auth.currentUser?.uid.orEmpty()) }
     var signedIn by remember { mutableStateOf(auth.currentUser != null) }
+    var signupName by remember { mutableStateOf("") }
+    var signupPhone by remember { mutableStateOf("") }
     var email by remember { mutableStateOf("") }
     var password by remember { mutableStateOf("") }
     var confirmPassword by remember { mutableStateOf("") }
@@ -144,6 +150,20 @@ class MainActivity : ComponentActivity() {
         prefs.edit().putBoolean("personal_$uid", true).apply()
     }
 
+    fun loadProfile(onLoaded: () -> Unit = {}) {
+        if (uid.isBlank()) { onLoaded(); return }
+        db.child("users").child(uid).child("profile").get()
+            .addOnSuccessListener { snap ->
+                val savedName = snap.child("name").getValue(String::class.java).orEmpty()
+                val savedPhone = snap.child("phone").getValue(String::class.java).orEmpty()
+                myName = savedName.ifBlank { prefs.getString("myName_$uid", "").orEmpty() }
+                whatsapp = savedPhone.ifBlank { prefs.getString("whatsapp_$uid", "").orEmpty() }
+                if (myName.isBlank()) myName = auth.currentUser?.email?.substringBefore('@').orEmpty().ifBlank { "Member" }
+                onLoaded()
+            }
+            .addOnFailureListener { onLoaded() }
+    }
+
     fun detachRoomListeners() {
         if (listeningRoom.isNotBlank()) {
             memberListener?.let { db.child("rooms").child(listeningRoom).child("members").removeEventListener(it) }
@@ -173,6 +193,7 @@ class MainActivity : ComponentActivity() {
         myName = ""
         whatsapp = ""
         members = emptyList()
+        loadProfile()
         listeningPersonal = true
         personalListener = object : ValueEventListener {
             override fun onDataChange(s: DataSnapshot) { expenses = s.children.mapNotNull { it.getValue(Expense::class.java) }.sortedByDescending { it.date } }
@@ -218,6 +239,7 @@ class MainActivity : ComponentActivity() {
     fun restoreRoom(user: FirebaseUser, signedInMessage: String = "You're connected") {
         uid = user.uid
         signedIn = true
+        loadProfile()
         val savedRoom = prefs.getString("roomId_${user.uid}", "").orEmpty()
         restoring = savedRoom.isNotBlank()
         if (savedRoom.isBlank()) {
@@ -298,6 +320,8 @@ class MainActivity : ComponentActivity() {
     }
 
     fun validateSignUp(): Boolean {
+        if (signupName.isBlank()) { message = "Enter your name"; return false }
+        if (!isValidPhone(signupPhone)) { message = "Enter a valid 10-15 digit mobile number"; return false }
         if (!isValidEmail(email)) { message = "Enter a valid email address"; return false }
         passwordIssue(password)?.let { message = it; return false }
         if (password != confirmPassword) { message = "Passwords do not match"; return false }
@@ -321,13 +345,31 @@ class MainActivity : ComponentActivity() {
         busy = true
         auth.createUserWithEmailAndPassword(email.trim(), password)
             .addOnSuccessListener { result ->
-                busy = false
                 val user = result.user ?: return@addOnSuccessListener
                 uid = user.uid
                 signedIn = true
                 restoring = false
                 personalMode = false
-                message = "Account created — you're connected"
+                val name = signupName.trim()
+                val phone = signupPhone.trim()
+                val profile = mapOf("name" to name, "phone" to phone, "email" to (user.email.orEmpty()))
+                db.child("users").child(user.uid).child("profile").setValue(profile)
+                    .addOnSuccessListener {
+                        myName = name
+                        whatsapp = phone
+                        signupName = ""
+                        signupPhone = ""
+                        busy = false
+                        message = "Account created — you're connected"
+                    }
+                    .addOnFailureListener {
+                        myName = name
+                        whatsapp = phone
+                        signupName = ""
+                        signupPhone = ""
+                        busy = false
+                        message = "Account created, but profile could not be saved"
+                    }
             }
             .addOnFailureListener { busy = false; message = friendlyAuthError(it) }
     }
@@ -362,6 +404,8 @@ class MainActivity : ComponentActivity() {
     }
 
     fun clearAuthFields() {
+        signupName = ""
+        signupPhone = ""
         email = ""
         password = ""
         confirmPassword = ""
@@ -375,23 +419,29 @@ class MainActivity : ComponentActivity() {
     }
 
     fun createRoom() {
-        if (uid.isBlank() || myName.isBlank() || roomName.isBlank()) { message = "Please enter a room name and your name"; return }
-        val code = (100000..999999).random().toString(); val id = db.child("rooms").push().key ?: return
-        val member = Member(uid, myName.trim(), whatsapp.trim(), "admin")
-        db.child("rooms").child(id).child("info").setValue(mapOf("name" to roomName.trim(), "createdBy" to uid, "createdAt" to ServerValue.TIMESTAMP)).addOnSuccessListener {
-            db.child("rooms").child(id).child("members").child(uid).setValue(member).addOnSuccessListener {
-                db.child("inviteCodes").child(code).setValue(id).addOnSuccessListener { invite = code; watchRoom(id); message = "Room created successfully" }
-                    .addOnFailureListener { message = it.message ?: "Could not create invite code" }
-            }.addOnFailureListener { message = it.message ?: "Could not add admin" }
-        }.addOnFailureListener { message = it.message ?: "Could not create room" }
+        if (uid.isBlank() || roomName.isBlank()) { message = "Enter a room name"; return }
+        loadProfile {
+            val code = (100000..999999).random().toString(); val id = db.child("rooms").push().key ?: return@loadProfile
+            val member = Member(uid, myName.trim().ifBlank { "Member" }, whatsapp.trim(), "admin")
+            db.child("rooms").child(id).child("info").setValue(mapOf("name" to roomName.trim(), "createdBy" to uid, "createdAt" to ServerValue.TIMESTAMP)).addOnSuccessListener {
+                db.child("rooms").child(id).child("members").child(uid).setValue(member).addOnSuccessListener {
+                    db.child("inviteCodes").child(code).setValue(id).addOnSuccessListener { invite = code; watchRoom(id); message = "Room created successfully" }
+                        .addOnFailureListener { message = it.message ?: "Could not create invite code" }
+                }.addOnFailureListener { message = it.message ?: "Could not add admin" }
+            }.addOnFailureListener { message = it.message ?: "Could not create room" }
+        }
     }
+
     fun joinRoom() {
-        if (uid.isBlank() || myName.isBlank() || invite.length != 6) { message = "Enter your name and 6-digit code"; return }
-        db.child("inviteCodes").child(invite).get().addOnSuccessListener { snap ->
-            val id = snap.getValue(String::class.java)
-            if (id.isNullOrBlank()) { message = "That invite code was not found"; return@addOnSuccessListener }
-            db.child("rooms").child(id).child("members").child(uid).setValue(Member(uid, myName.trim(), whatsapp.trim(), "member")).addOnSuccessListener { watchRoom(id); message = "Welcome to the room!" }.addOnFailureListener { message = it.message ?: "Could not join room" }
-        }.addOnFailureListener { message = it.message ?: "Could not check invite code" }
+        if (uid.isBlank() || invite.length != 6) { message = "Enter the 6-digit room code"; return }
+        loadProfile {
+            db.child("inviteCodes").child(invite).get().addOnSuccessListener { snap ->
+                val id = snap.getValue(String::class.java)
+                if (id.isNullOrBlank()) { message = "That invite code was not found"; return@addOnSuccessListener }
+                val member = Member(uid, myName.trim().ifBlank { "Member" }, whatsapp.trim(), "member")
+                db.child("rooms").child(id).child("members").child(uid).setValue(member).addOnSuccessListener { watchRoom(id); message = "Welcome to the room!" }.addOnFailureListener { message = it.message ?: "Could not join room" }
+            }.addOnFailureListener { message = it.message ?: "Could not check invite code" }
+        }
     }
     fun expenseRef() = if (personalMode) db.child("users").child(uid).child("personalExpenses") else db.child("rooms").child(roomId).child("expenses")
 
@@ -446,6 +496,10 @@ class MainActivity : ComponentActivity() {
         }
     } else if (!signedIn) {
         LoginScreen(
+            signupName = signupName,
+            onSignupNameChange = { signupName = it },
+            signupPhone = signupPhone,
+            onSignupPhoneChange = { signupPhone = it.filter { c -> c.isDigit() || c == '+' }.take(15) },
             email = email,
             onEmailChange = { email = it },
             password = password,
@@ -471,12 +525,11 @@ class MainActivity : ComponentActivity() {
             Spacer(Modifier.height(24.dp))
             Card(shape = RoundedCornerShape(24.dp), elevation = CardDefaults.cardElevation(3.dp)) {
                 Column(Modifier.padding(18.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
-                    Text("Get started", style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold)
-                    OutlinedTextField(roomName, { roomName = it }, label = { Text("Room name (for new room)") }, modifier = Modifier.fillMaxWidth(), singleLine = true)
-                    OutlinedTextField(myName, { myName = it }, label = { Text("Your name") }, modifier = Modifier.fillMaxWidth(), singleLine = true)
-                    OutlinedTextField(whatsapp, { whatsapp = it.filter { c -> c.isDigit() || c == '+' }.take(15) }, label = { Text("WhatsApp number (optional)") }, keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Phone), modifier = Modifier.fillMaxWidth(), singleLine = true)
-                    OutlinedTextField(invite, { invite = it.filter(Char::isDigit).take(6) }, label = { Text("6-digit room code (to join)") }, keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number), modifier = Modifier.fillMaxWidth(), singleLine = true)
+                    Text("Create a room", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
+                    OutlinedTextField(roomName, { roomName = it }, label = { Text("Room name") }, modifier = Modifier.fillMaxWidth(), singleLine = true)
                     Button(onClick = { createRoom() }, enabled = uid.isNotBlank(), modifier = Modifier.fillMaxWidth().height(50.dp)) { Text("Create a new room") }
+                    Text("Join a room", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
+                    OutlinedTextField(invite, { invite = it.filter(Char::isDigit).take(6) }, label = { Text("6-digit room code") }, keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number), modifier = Modifier.fillMaxWidth(), singleLine = true)
                     OutlinedButton(onClick = { joinRoom() }, enabled = uid.isNotBlank(), modifier = Modifier.fillMaxWidth().height(50.dp)) { Text("Join with invite code") }
                     TextButton(onClick = { enterPersonalMode() }, enabled = uid.isNotBlank(), modifier = Modifier.fillMaxWidth()) { Text("Continue without a room — personal expenses") }
                 }
@@ -531,7 +584,7 @@ class MainActivity : ComponentActivity() {
                 else -> Column(Modifier.weight(1f).padding(20.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
                     Text("Your profile", style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold)
                     if (message.isNotBlank()) Text(message, color = Purple, style = MaterialTheme.typography.bodySmall)
-                    Card { Column(Modifier.padding(16.dp)) { Text(if (personalMode) "Personal account" else if (myName.isBlank()) "Your profile" else myName, style = MaterialTheme.typography.titleLarge); if (!personalMode && whatsapp.isNotBlank()) Text(whatsapp, color = Color.Gray); Text(if (personalMode) "Personal mode" else if (isAdmin) "Room admin" else "Room member", color = Purple) } }
+                    Card { Column(Modifier.padding(16.dp)) { Text(if (myName.isBlank()) if (personalMode) "Personal account" else "Your profile" else myName, style = MaterialTheme.typography.titleLarge); if (whatsapp.isNotBlank()) Text(whatsapp, color = Color.Gray); Text(if (personalMode) "Personal mode" else if (isAdmin) "Room admin" else "Room member", color = Purple) } }
                     val user = auth.currentUser
                     Card(Modifier.fillMaxWidth()) {
                         Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
@@ -611,6 +664,10 @@ class MainActivity : ComponentActivity() {
 }
 
 @Composable private fun LoginScreen(
+    signupName: String,
+    onSignupNameChange: (String) -> Unit,
+    signupPhone: String,
+    onSignupPhoneChange: (String) -> Unit,
     email: String,
     onEmailChange: (String) -> Unit,
     password: String,
@@ -628,7 +685,7 @@ class MainActivity : ComponentActivity() {
     onSubmit: () -> Unit,
     onForgotPassword: () -> Unit
 ) {
-    Column(Modifier.fillMaxSize().background(Pale).padding(22.dp), verticalArrangement = Arrangement.Center) {
+    Column(Modifier.fillMaxSize().background(Pale).padding(22.dp).verticalScroll(rememberScrollState()), verticalArrangement = Arrangement.Center) {
         Text("RoomMate", color = Purple, style = MaterialTheme.typography.headlineLarge, fontWeight = FontWeight.ExtraBold)
         Text("EXPENSES", color = Purple, style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
         Spacer(Modifier.height(8.dp))
@@ -636,6 +693,10 @@ class MainActivity : ComponentActivity() {
         Spacer(Modifier.height(24.dp))
         Card(shape = RoundedCornerShape(24.dp), elevation = CardDefaults.cardElevation(3.dp)) {
             Column(Modifier.padding(18.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                if (isSignUp) {
+                    OutlinedTextField(signupName, onSignupNameChange, label = { Text("Your name") }, modifier = Modifier.fillMaxWidth(), singleLine = true, enabled = !busy)
+                    OutlinedTextField(signupPhone, onSignupPhoneChange, label = { Text("Mobile number") }, keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Phone), modifier = Modifier.fillMaxWidth(), singleLine = true, enabled = !busy)
+                }
                 OutlinedTextField(email, onEmailChange, label = { Text("Email") }, keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Email), modifier = Modifier.fillMaxWidth(), singleLine = true, enabled = !busy)
                 OutlinedTextField(
                     password,
