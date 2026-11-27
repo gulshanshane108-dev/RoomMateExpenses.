@@ -1,5 +1,6 @@
 package com.roommate.expenses
 
+import android.content.Context
 import android.os.Bundle
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
@@ -14,6 +15,7 @@ import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.input.PasswordVisualTransformation
@@ -21,6 +23,7 @@ import androidx.compose.ui.unit.dp
 import com.google.firebase.FirebaseApp
 import com.google.firebase.auth.EmailAuthProvider
 import com.google.firebase.auth.FirebaseAuth
+import com.google.firebase.auth.FirebaseUser
 import com.google.firebase.database.*
 import java.text.SimpleDateFormat
 import java.util.*
@@ -67,15 +70,106 @@ class MainActivity : ComponentActivity() {
     var isAdmin by remember { mutableStateOf(false) }
     var tab by remember { mutableStateOf("Home") }
     var editing by remember { mutableStateOf<Expense?>(null) }
+    var restoring by remember { mutableStateOf(false) }
+
+    val context = LocalContext.current
+    val prefs = remember { context.getSharedPreferences("room_session", Context.MODE_PRIVATE) }
+    var memberListener by remember { mutableStateOf<ValueEventListener?>(null) }
+    var expenseListener by remember { mutableStateOf<ValueEventListener?>(null) }
+    var listeningRoom by remember { mutableStateOf("") }
+
+    fun clearRoomSessionFor(userId: String) {
+        if (userId.isBlank()) return
+        prefs.edit()
+            .remove("roomId_$userId")
+            .remove("myName_$userId")
+            .remove("whatsapp_$userId")
+            .remove("invite_$userId")
+            .apply()
+    }
+
+    fun clearRoomSession() = clearRoomSessionFor(uid)
+
+    fun saveRoomSession() {
+        if (uid.isBlank() || roomId.isBlank()) return
+        prefs.edit()
+            .putString("roomId_$uid", roomId)
+            .putString("myName_$uid", myName)
+            .putString("whatsapp_$uid", whatsapp)
+            .putString("invite_$uid", invite)
+            .apply()
+    }
+
+    fun detachRoomListeners() {
+        if (listeningRoom.isNotBlank()) {
+            memberListener?.let { db.child("rooms").child(listeningRoom).child("members").removeEventListener(it) }
+            expenseListener?.let { db.child("rooms").child(listeningRoom).child("expenses").removeEventListener(it) }
+        }
+        listeningRoom = ""
+        memberListener = null
+        expenseListener = null
+    }
+
+    fun watchRoom(id: String) {
+        detachRoomListeners()
+        listeningRoom = id
+        roomId = id
+        saveRoomSession()
+        db.child("rooms").child(id).child("info").child("name").get().addOnSuccessListener { roomName = it.getValue(String::class.java) ?: "My Room" }
+        memberListener = object : ValueEventListener {
+            override fun onDataChange(s: DataSnapshot) { members = s.children.mapNotNull { it.getValue(Member::class.java) }; isAdmin = s.child(uid).child("role").getValue(String::class.java) == "admin" }
+            override fun onCancelled(e: DatabaseError) { message = e.message }
+        }
+        expenseListener = object : ValueEventListener {
+            override fun onDataChange(s: DataSnapshot) { expenses = s.children.mapNotNull { it.getValue(Expense::class.java) }.sortedByDescending { it.date } }
+            override fun onCancelled(e: DatabaseError) { message = e.message }
+        }
+        db.child("rooms").child(id).child("members").addValueEventListener(memberListener!!)
+        db.child("rooms").child(id).child("expenses").addValueEventListener(expenseListener!!)
+    }
+
+    DisposableEffect(Unit) {
+        onDispose { detachRoomListeners() }
+    }
+
+    fun restoreRoom(user: FirebaseUser, signedInMessage: String = "You're connected") {
+        uid = user.uid
+        signedIn = true
+        val savedRoom = prefs.getString("roomId_${user.uid}", "").orEmpty()
+        restoring = savedRoom.isNotBlank()
+        if (savedRoom.isBlank()) {
+            message = signedInMessage
+            return
+        }
+        db.child("rooms").child(savedRoom).child("members").child(user.uid).get()
+            .addOnSuccessListener { snap ->
+                restoring = false
+                if (!snap.exists()) {
+                    clearRoomSessionFor(user.uid)
+                    message = signedInMessage
+                    return@addOnSuccessListener
+                }
+                val member = snap.getValue(Member::class.java)
+                myName = member?.name?.takeIf { it.isNotBlank() } ?: prefs.getString("myName_${user.uid}", "").orEmpty()
+                whatsapp = member?.whatsapp?.takeIf { it.isNotBlank() } ?: prefs.getString("whatsapp_${user.uid}", "").orEmpty()
+                invite = prefs.getString("invite_${user.uid}", "").orEmpty()
+                watchRoom(savedRoom)
+                message = if (signedInMessage == "You're connected") "Room restored" else signedInMessage
+            }
+            .addOnFailureListener {
+                restoring = false
+                clearRoomSessionFor(user.uid)
+                message = "Could not restore room — please join again"
+            }
+    }
 
     LaunchedEffect(Unit) {
         val user = auth.currentUser
         if (user != null) {
-            uid = user.uid
-            signedIn = true
-            message = "You're connected"
+            restoreRoom(user)
         } else {
             signedIn = false
+            restoring = false
             message = "Sign in to continue"
         }
     }
@@ -84,7 +178,11 @@ class MainActivity : ComponentActivity() {
         if (email.isBlank() || password.isBlank()) { message = "Enter email and password"; return }
         busy = true
         auth.signInWithEmailAndPassword(email.trim(), password)
-            .addOnSuccessListener { busy = false; uid = it.user?.uid.orEmpty(); signedIn = true; message = "You're connected" }
+            .addOnSuccessListener { result ->
+                busy = false
+                val user = result.user ?: return@addOnSuccessListener
+                restoreRoom(user)
+            }
             .addOnFailureListener { busy = false; message = it.message ?: "Sign in failed" }
     }
 
@@ -92,22 +190,17 @@ class MainActivity : ComponentActivity() {
         if (email.isBlank() || password.isBlank()) { message = "Enter email and password"; return }
         busy = true
         auth.createUserWithEmailAndPassword(email.trim(), password)
-            .addOnSuccessListener { busy = false; uid = it.user?.uid.orEmpty(); signedIn = true; message = "Account created — you're connected" }
+            .addOnSuccessListener { result ->
+                busy = false
+                val user = result.user ?: return@addOnSuccessListener
+                uid = user.uid
+                signedIn = true
+                restoring = false
+                message = "Account created — you're connected"
+            }
             .addOnFailureListener { busy = false; message = it.message ?: "Could not create account" }
     }
 
-    fun watchRoom(id: String) {
-        roomId = id
-        db.child("rooms").child(id).child("info").child("name").get().addOnSuccessListener { roomName = it.getValue(String::class.java) ?: "My Room" }
-        db.child("rooms").child(id).child("members").addValueEventListener(object : ValueEventListener {
-            override fun onDataChange(s: DataSnapshot) { members = s.children.mapNotNull { it.getValue(Member::class.java) }; isAdmin = s.child(uid).child("role").getValue(String::class.java) == "admin" }
-            override fun onCancelled(e: DatabaseError) { message = e.message }
-        })
-        db.child("rooms").child(id).child("expenses").addValueEventListener(object : ValueEventListener {
-            override fun onDataChange(s: DataSnapshot) { expenses = s.children.mapNotNull { it.getValue(Expense::class.java) }.sortedByDescending { it.date } }
-            override fun onCancelled(e: DatabaseError) { message = e.message }
-        })
-    }
     fun createRoom() {
         if (uid.isBlank() || myName.isBlank() || whatsapp.isBlank() || roomName.isBlank()) { message = "Please complete all fields"; return }
         val code = (100000..999999).random().toString(); val id = db.child("rooms").push().key ?: return
@@ -141,7 +234,16 @@ class MainActivity : ComponentActivity() {
     val total = monthExpenses.sumOf { it.amount }; val personalTotal = monthExpenses.filter { it.memberUid == uid }.sumOf { it.amount }
     fun money(n: Double) = "₹" + String.format(Locale("en", "IN"), "%,.2f", n)
 
-    if (!signedIn) {
+    if (restoring) {
+        Column(Modifier.fillMaxSize().background(Pale).padding(22.dp), verticalArrangement = Arrangement.Center, horizontalAlignment = Alignment.CenterHorizontally) {
+            Text("RoomMate", color = Purple, style = MaterialTheme.typography.headlineLarge, fontWeight = FontWeight.ExtraBold)
+            Text("EXPENSES", color = Purple, style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
+            Spacer(Modifier.height(24.dp))
+            CircularProgressIndicator(color = Purple)
+            Spacer(Modifier.height(12.dp))
+            Text("Restoring your room…", color = Purple, style = MaterialTheme.typography.bodyLarge)
+        }
+    } else if (!signedIn) {
         LoginScreen(email, { email = it }, password, { password = it }, message, busy, { signIn() }, { signUp() })
     } else if (roomId.isBlank()) {
         Column(Modifier.fillMaxSize().background(Pale).padding(22.dp), verticalArrangement = Arrangement.Center) {
@@ -162,8 +264,11 @@ class MainActivity : ComponentActivity() {
             }
             Spacer(Modifier.height(12.dp)); Text(message, color = Purple, style = MaterialTheme.typography.bodySmall)
             TextButton(onClick = {
+                clearRoomSession()
+                detachRoomListeners()
                 auth.signOut()
                 signedIn = false
+                restoring = false
                 email = ""
                 password = ""
                 message = "Signed out"
@@ -221,8 +326,11 @@ class MainActivity : ComponentActivity() {
                                 }, enabled = !busy, modifier = Modifier.fillMaxWidth()) { Text("Make account permanent") }
                             }
                             TextButton(onClick = {
+                                clearRoomSession()
+                                detachRoomListeners()
                                 auth.signOut()
                                 signedIn = false
+                                restoring = false
                                 roomId = ""
                                 invite = ""
                                 expenses = emptyList()
@@ -235,7 +343,7 @@ class MainActivity : ComponentActivity() {
                     Text("Your total this month", color = Color.Gray); Text(money(personalTotal), style = MaterialTheme.typography.headlineMedium, color = Purple, fontWeight = FontWeight.Bold)
                     Text("Room code: $invite")
                     Text("RoomMate Expenses · INR (₹)", color = Color.Gray)
-                    TextButton(onClick = { roomId = ""; invite = ""; expenses = emptyList(); members = emptyList(); tab = "Home" }) { Text("Leave this room on this device") }
+                    TextButton(onClick = { clearRoomSession(); detachRoomListeners(); roomId = ""; invite = ""; expenses = emptyList(); members = emptyList(); tab = "Home"; message = "Left room on this device" }) { Text("Leave this room on this device") }
                     Text(message, color = Purple, style = MaterialTheme.typography.bodySmall)
                 }
             }

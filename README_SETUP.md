@@ -8,6 +8,7 @@ Android app built with Kotlin, Jetpack Compose, Firebase Email/Password Authenti
 - **Link an existing anonymous account to email/password so its UID, rooms and expenses are preserved**
 - Sign out and profile/account section
 - Create a room and join using a six-digit invite code
+- Active room session is restored automatically after an app restart
 - Room-wide monthly spending dashboard and personal monthly total
 - Add, edit and delete expense entries
 - Categories: Food, Rent, Bills, Travel, Shopping and Other
