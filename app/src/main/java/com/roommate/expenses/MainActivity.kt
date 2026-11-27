@@ -435,6 +435,7 @@ class MainActivity : ComponentActivity() {
                 }
                 else -> Column(Modifier.weight(1f).padding(20.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
                     Text("Your profile", style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold)
+                    if (message.isNotBlank()) Text(message, color = Purple, style = MaterialTheme.typography.bodySmall)
                     Card { Column(Modifier.padding(16.dp)) { Text(myName, style = MaterialTheme.typography.titleLarge); Text(whatsapp, color = Color.Gray); Text(if (isAdmin) "Room admin" else "Room member", color = Purple) } }
                     val user = auth.currentUser
                     Card(Modifier.fillMaxWidth()) {
@@ -501,7 +502,6 @@ class MainActivity : ComponentActivity() {
                     Text("Room code: $invite")
                     Text("RoomMate Expenses · INR (₹)", color = Color.Gray)
                     TextButton(onClick = { clearRoomSession(); detachRoomListeners(); roomId = ""; invite = ""; expenses = emptyList(); members = emptyList(); tab = "Home"; message = "Left room on this device" }) { Text("Leave this room on this device") }
-                    Text(message, color = Purple, style = MaterialTheme.typography.bodySmall)
                 }
             }
             NavigationBar(containerColor = Color.White) { listOf("Home", "Expenses", "Members", "Profile").forEach { t -> NavigationBarItem(selected = tab == t, onClick = { tab = t }, icon = { Text(when (t) { "Home" -> "⌂"; "Expenses" -> "₹"; "Members" -> "♙"; else -> "●" }, color = if (tab == t) Purple else Color.Gray) }, label = { Text(t) }) } }
