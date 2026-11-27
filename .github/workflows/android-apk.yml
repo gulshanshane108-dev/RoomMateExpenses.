@@ -1,11 +1,16 @@
-
-name: Build RoomMate Expenses APK
+name: Build RoomMate Expenses Release APK
 
 on:
   workflow_dispatch:
   push:
     branches:
       - main
+
+env:
+  RELEASE_KEYSTORE_B64: ${{ secrets.RELEASE_KEYSTORE_B64 }}
+  RELEASE_STORE_PASSWORD: ${{ secrets.RELEASE_STORE_PASSWORD }}
+  RELEASE_KEY_ALIAS: ${{ secrets.RELEASE_KEY_ALIAS }}
+  RELEASE_KEY_PASSWORD: ${{ secrets.RELEASE_KEY_PASSWORD }}
 
 jobs:
   build:
@@ -26,12 +31,12 @@ jobs:
         with:
           gradle-version: '8.9'
 
-      - name: Build APK
-        run: gradle clean assembleDebug
+      - name: Build signed release APK
+        run: gradle clean assembleRelease
 
       - name: Upload APK
         uses: actions/upload-artifact@v4
         with:
-          name: RoomMateExpenses-debug-apk
-          path: app/build/outputs/apk/debug/app-debug.apk
+          name: RoomMateExpenses-release-apk
+          path: app/build/outputs/apk/release/app-release.apk
           if-no-files-found: error
