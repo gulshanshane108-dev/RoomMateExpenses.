@@ -31,6 +31,17 @@ jobs:
         with:
           gradle-version: '8.9'
 
+      - name: Verify release signing secrets
+        run: |
+          missing=0
+          for name in RELEASE_KEYSTORE_B64 RELEASE_STORE_PASSWORD RELEASE_KEY_ALIAS RELEASE_KEY_PASSWORD; do
+            if [ -z "${!name}" ]; then
+              echo "::error::Missing required secret: $name"
+              missing=1
+            fi
+          done
+          exit $missing
+
       - name: Build signed release APK
         run: gradle clean assembleRelease
 
