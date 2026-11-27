@@ -170,6 +170,8 @@ class MainActivity : ComponentActivity() {
         personalMode = true
         roomId = ""
         invite = ""
+        myName = ""
+        whatsapp = ""
         members = emptyList()
         listeningPersonal = true
         personalListener = object : ValueEventListener {
@@ -373,7 +375,7 @@ class MainActivity : ComponentActivity() {
     }
 
     fun createRoom() {
-        if (uid.isBlank() || myName.isBlank() || whatsapp.isBlank() || roomName.isBlank()) { message = "Please complete all fields"; return }
+        if (uid.isBlank() || myName.isBlank() || roomName.isBlank()) { message = "Please enter a room name and your name"; return }
         val code = (100000..999999).random().toString(); val id = db.child("rooms").push().key ?: return
         val member = Member(uid, myName.trim(), whatsapp.trim(), "admin")
         db.child("rooms").child(id).child("info").setValue(mapOf("name" to roomName.trim(), "createdBy" to uid, "createdAt" to ServerValue.TIMESTAMP)).addOnSuccessListener {
@@ -384,7 +386,7 @@ class MainActivity : ComponentActivity() {
         }.addOnFailureListener { message = it.message ?: "Could not create room" }
     }
     fun joinRoom() {
-        if (uid.isBlank() || myName.isBlank() || whatsapp.isBlank() || invite.length != 6) { message = "Enter your name, WhatsApp number and 6-digit code"; return }
+        if (uid.isBlank() || myName.isBlank() || invite.length != 6) { message = "Enter your name and 6-digit code"; return }
         db.child("inviteCodes").child(invite).get().addOnSuccessListener { snap ->
             val id = snap.getValue(String::class.java)
             if (id.isNullOrBlank()) { message = "That invite code was not found"; return@addOnSuccessListener }
@@ -472,7 +474,7 @@ class MainActivity : ComponentActivity() {
                     Text("Get started", style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold)
                     OutlinedTextField(roomName, { roomName = it }, label = { Text("Room name (for new room)") }, modifier = Modifier.fillMaxWidth(), singleLine = true)
                     OutlinedTextField(myName, { myName = it }, label = { Text("Your name") }, modifier = Modifier.fillMaxWidth(), singleLine = true)
-                    OutlinedTextField(whatsapp, { whatsapp = it.filter { c -> c.isDigit() || c == '+' }.take(15) }, label = { Text("WhatsApp number") }, keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Phone), modifier = Modifier.fillMaxWidth(), singleLine = true)
+                    OutlinedTextField(whatsapp, { whatsapp = it.filter { c -> c.isDigit() || c == '+' }.take(15) }, label = { Text("WhatsApp number (optional)") }, keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Phone), modifier = Modifier.fillMaxWidth(), singleLine = true)
                     OutlinedTextField(invite, { invite = it.filter(Char::isDigit).take(6) }, label = { Text("6-digit room code (to join)") }, keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number), modifier = Modifier.fillMaxWidth(), singleLine = true)
                     Button(onClick = { createRoom() }, enabled = uid.isNotBlank(), modifier = Modifier.fillMaxWidth().height(50.dp)) { Text("Create a new room") }
                     OutlinedButton(onClick = { joinRoom() }, enabled = uid.isNotBlank(), modifier = Modifier.fillMaxWidth().height(50.dp)) { Text("Join with invite code") }
@@ -529,7 +531,7 @@ class MainActivity : ComponentActivity() {
                 else -> Column(Modifier.weight(1f).padding(20.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
                     Text("Your profile", style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold)
                     if (message.isNotBlank()) Text(message, color = Purple, style = MaterialTheme.typography.bodySmall)
-                    Card { Column(Modifier.padding(16.dp)) { Text(if (personalMode) "Personal account" else if (myName.isBlank()) "Your profile" else myName, style = MaterialTheme.typography.titleLarge); if (whatsapp.isNotBlank()) Text(whatsapp, color = Color.Gray); Text(if (personalMode) "Personal mode" else if (isAdmin) "Room admin" else "Room member", color = Purple) } }
+                    Card { Column(Modifier.padding(16.dp)) { Text(if (personalMode) "Personal account" else if (myName.isBlank()) "Your profile" else myName, style = MaterialTheme.typography.titleLarge); if (!personalMode && whatsapp.isNotBlank()) Text(whatsapp, color = Color.Gray); Text(if (personalMode) "Personal mode" else if (isAdmin) "Room admin" else "Room member", color = Purple) } }
                     val user = auth.currentUser
                     Card(Modifier.fillMaxWidth()) {
                         Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
