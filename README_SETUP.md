@@ -13,6 +13,7 @@ Android app built with Kotlin, Jetpack Compose, Firebase Email/Password Authenti
 - **Rooms are optional**: create a room, join with a six-digit invite code, or continue in personal mode
 - Personal mode stores expenses per user under `users/{uid}/personalExpenses`
 - Switch between personal mode and room mode from Profile at any time
+- WhatsApp number is optional; personal mode never shows a room member's phone number
 - Active room or personal session is restored automatically after an app restart
 - Room-wide monthly spending dashboard and personal monthly total
 - Add, edit and delete expense entries
