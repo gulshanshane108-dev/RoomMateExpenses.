@@ -10,8 +10,10 @@ Android app built with Kotlin, Jetpack Compose, Firebase Email/Password Authenti
 - **Link an existing anonymous account to email/password so its UID, rooms and expenses are preserved**
 - Sign out and profile/account section with soft email-verification status and resend/refresh actions
 - Firebase Auth state handling; sign-out clears the locally saved room session
-- Create a room and join using a six-digit invite code
-- Active room session is restored automatically after an app restart
+- **Rooms are optional**: create a room, join with a six-digit invite code, or continue in personal mode
+- Personal mode stores expenses per user under `users/{uid}/personalExpenses`
+- Switch between personal mode and room mode from Profile at any time
+- Active room or personal session is restored automatically after an app restart
 - Room-wide monthly spending dashboard and personal monthly total
 - Add, edit and delete expense entries
 - Categories: Food, Rent, Bills, Travel, Shopping and Other
@@ -27,7 +29,7 @@ Android app built with Kotlin, Jetpack Compose, Firebase Email/Password Authenti
 4. Optional: customize **Templates → Password reset** and **Verify email** so users recognize the messages.
 5. Keep **Anonymous** enabled only if you still have existing guest accounts to migrate; the app now opens on a sign-in screen for new users, and the Profile tab lets an existing guest link an email/password to keep the same UID.
 6. Create a Realtime Database and verify its URL/region in Firebase.
-7. Publish database rules appropriate to your test and production needs. The included `firebase-database.rules.json` already requires `auth != null` for room reads/writes, restricts room reads to members, and lets a user write only their own member record.
+7. Publish database rules appropriate to your test and production needs. The included `firebase-database.rules.json` requires `auth != null` for room reads/writes, restricts room reads to members, lets a user write only their own member record, and allows a user to read/write only their own `personalExpenses`. Publish the updated rules file before testing personal mode.
 
 The included rules file is a starting point, not a security audit. In particular, the invite-code lookup and write permissions need a trusted backend design before real users rely on the app. Do not use public read/write rules for a deployed app. WhatsApp numbers are user-entered and are not verified by this app.
 
