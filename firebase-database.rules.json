@@ -8,6 +8,16 @@
         ".write": "auth != null && newData.isString()"
       }
     },
+    "users": {
+      "$uid": {
+        ".read": "auth != null && auth.uid == $uid",
+        "personalExpenses": {
+          "$expenseId": {
+            ".write": "auth != null && auth.uid == $uid && (!data.exists() || data.child('memberUid').val() == auth.uid)"
+          }
+        }
+      }
+    },
     "rooms": {
       "$roomId": {
         ".read": "auth != null && data.child('members').child(auth.uid).exists()",
