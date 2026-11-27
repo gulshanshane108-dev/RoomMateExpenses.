@@ -4,9 +4,12 @@ Android app built with Kotlin, Jetpack Compose, Firebase Email/Password Authenti
 
 ## Included in this build
 - Purple and white Material 3 interface
-- **Permanent Email/Password sign-in and account creation**
+- **Complete Email/Password authentication: Sign in, Create account, and Forgot password**
+- Email format validation, 8+ character password rule, confirm password, and show/hide password controls
+- Friendly authentication error messages and disabled buttons while a request is running
 - **Link an existing anonymous account to email/password so its UID, rooms and expenses are preserved**
-- Sign out and profile/account section
+- Sign out and profile/account section with soft email-verification status and resend/refresh actions
+- Firebase Auth state handling; sign-out clears the locally saved room session
 - Create a room and join using a six-digit invite code
 - Active room session is restored automatically after an app restart
 - Room-wide monthly spending dashboard and personal monthly total
@@ -20,9 +23,11 @@ Android app built with Kotlin, Jetpack Compose, Firebase Email/Password Authenti
 ## Firebase setup
 1. Keep your project's `app/google-services.json` in place.
 2. In Firebase Console, enable **Authentication → Sign-in method → Email/Password**.
-3. Keep **Anonymous** enabled only if you still have existing guest accounts to migrate; the app now opens on a sign-in screen for new users, and the Profile tab lets an existing guest link an email/password to keep the same UID.
-4. Create a Realtime Database and verify its URL/region in Firebase.
-5. Publish database rules appropriate to your test and production needs.
+3. Under **Authentication → Settings → Authorized domains**, add your Firebase Hosting/domain if you deploy a web client; the Android app uses the default Firebase domains.
+4. Optional: customize **Templates → Password reset** and **Verify email** so users recognize the messages.
+5. Keep **Anonymous** enabled only if you still have existing guest accounts to migrate; the app now opens on a sign-in screen for new users, and the Profile tab lets an existing guest link an email/password to keep the same UID.
+6. Create a Realtime Database and verify its URL/region in Firebase.
+7. Publish database rules appropriate to your test and production needs. The included `firebase-database.rules.json` already requires `auth != null` for room reads/writes, restricts room reads to members, and lets a user write only their own member record.
 
 The included rules file is a starting point, not a security audit. In particular, the invite-code lookup and write permissions need a trusted backend design before real users rely on the app. Do not use public read/write rules for a deployed app. WhatsApp numbers are user-entered and are not verified by this app.
 

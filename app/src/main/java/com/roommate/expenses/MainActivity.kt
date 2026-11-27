@@ -19,10 +19,15 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.input.PasswordVisualTransformation
+import androidx.compose.ui.text.input.VisualTransformation
 import androidx.compose.ui.unit.dp
 import com.google.firebase.FirebaseApp
 import com.google.firebase.auth.EmailAuthProvider
 import com.google.firebase.auth.FirebaseAuth
+import com.google.firebase.auth.FirebaseAuthInvalidCredentialsException
+import com.google.firebase.auth.FirebaseAuthInvalidUserException
+import com.google.firebase.auth.FirebaseAuthUserCollisionException
+import com.google.firebase.auth.FirebaseAuthWeakPasswordException
 import com.google.firebase.auth.FirebaseUser
 import com.google.firebase.database.*
 import java.text.SimpleDateFormat
@@ -33,6 +38,28 @@ data class Expense(val id: String = "", val memberUid: String = "", val memberNa
 
 private val Purple = Color(0xFF6542B8)
 private val Pale = Color(0xFFF4F0FC)
+private val EmailPattern = Regex("^[A-Za-z0-9+_.-]+@[A-Za-z0-9.-]+\\.[A-Za-z]{2,}$")
+
+private fun isValidEmail(value: String) = EmailPattern.matches(value.trim())
+
+private fun passwordIssue(value: String): String? = when {
+    value.length < 8 -> "Password must be at least 8 characters"
+    !value.any { it.isLetter() } -> "Password must include at least one letter"
+    !value.any { it.isDigit() } -> "Password must include at least one number"
+    else -> null
+}
+
+private fun friendlyAuthError(error: Exception): String = when (error) {
+    is FirebaseAuthInvalidCredentialsException -> "Incorrect email or password."
+    is FirebaseAuthInvalidUserException -> "No account found for this email."
+    is FirebaseAuthUserCollisionException -> "An account already exists with this email."
+    is FirebaseAuthWeakPasswordException -> "Password is too weak. Use at least 8 characters with letters and numbers."
+    else -> when {
+        error.message?.contains("network", true) == true -> "No internet connection. Please try again."
+        error.message?.contains("too-many-requests", true) == true -> "Too many attempts. Please wait and try again."
+        else -> error.message ?: "Authentication failed. Please try again."
+    }
+}
 
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -53,8 +80,15 @@ class MainActivity : ComponentActivity() {
     var signedIn by remember { mutableStateOf(auth.currentUser != null) }
     var email by remember { mutableStateOf("") }
     var password by remember { mutableStateOf("") }
+    var confirmPassword by remember { mutableStateOf("") }
+    var isSignUp by remember { mutableStateOf(false) }
+    var showPassword by remember { mutableStateOf(false) }
+    var showConfirmPassword by remember { mutableStateOf(false) }
     var linkEmail by remember { mutableStateOf("") }
     var linkPassword by remember { mutableStateOf("") }
+    var linkConfirmPassword by remember { mutableStateOf("") }
+    var showLinkPassword by remember { mutableStateOf(false) }
+    var accountVersion by remember { mutableStateOf(0) }
     var busy by remember { mutableStateOf(false) }
     var roomId by remember { mutableStateOf("") }
     var myName by remember { mutableStateOf("") }
@@ -174,8 +208,43 @@ class MainActivity : ComponentActivity() {
         }
     }
 
+    DisposableEffect(Unit) {
+        val listener = FirebaseAuth.AuthStateListener { a ->
+            val user = a.currentUser
+            if (user == null) {
+                signedIn = false
+                uid = ""
+                restoring = false
+                detachRoomListeners()
+                roomId = ""
+                invite = ""
+                expenses = emptyList()
+                members = emptyList()
+                tab = "Home"
+            } else {
+                uid = user.uid
+                signedIn = true
+            }
+        }
+        auth.addAuthStateListener(listener)
+        onDispose { auth.removeAuthStateListener(listener) }
+    }
+
+    fun validateSignIn(): Boolean {
+        if (email.isBlank() || password.isBlank()) { message = "Enter email and password"; return false }
+        if (!isValidEmail(email)) { message = "Enter a valid email address"; return false }
+        return true
+    }
+
+    fun validateSignUp(): Boolean {
+        if (!isValidEmail(email)) { message = "Enter a valid email address"; return false }
+        passwordIssue(password)?.let { message = it; return false }
+        if (password != confirmPassword) { message = "Passwords do not match"; return false }
+        return true
+    }
+
     fun signIn() {
-        if (email.isBlank() || password.isBlank()) { message = "Enter email and password"; return }
+        if (!validateSignIn()) return
         busy = true
         auth.signInWithEmailAndPassword(email.trim(), password)
             .addOnSuccessListener { result ->
@@ -183,11 +252,11 @@ class MainActivity : ComponentActivity() {
                 val user = result.user ?: return@addOnSuccessListener
                 restoreRoom(user)
             }
-            .addOnFailureListener { busy = false; message = it.message ?: "Sign in failed" }
+            .addOnFailureListener { busy = false; message = friendlyAuthError(it) }
     }
 
     fun signUp() {
-        if (email.isBlank() || password.isBlank()) { message = "Enter email and password"; return }
+        if (!validateSignUp()) return
         busy = true
         auth.createUserWithEmailAndPassword(email.trim(), password)
             .addOnSuccessListener { result ->
@@ -198,7 +267,49 @@ class MainActivity : ComponentActivity() {
                 restoring = false
                 message = "Account created — you're connected"
             }
-            .addOnFailureListener { busy = false; message = it.message ?: "Could not create account" }
+            .addOnFailureListener { busy = false; message = friendlyAuthError(it) }
+    }
+
+    fun submitAuth() {
+        if (isSignUp) signUp() else signIn()
+    }
+
+    fun sendPasswordReset() {
+        if (!isValidEmail(email)) { message = "Enter a valid email address to reset your password"; return }
+        busy = true
+        auth.sendPasswordResetEmail(email.trim())
+            .addOnSuccessListener { busy = false; message = "Password reset email sent to ${email.trim()}" }
+            .addOnFailureListener { error ->
+                busy = false
+                message = if (error is FirebaseAuthInvalidUserException) "If an account exists, a reset link was sent." else friendlyAuthError(error)
+            }
+    }
+
+    fun sendVerificationEmail(user: FirebaseUser) {
+        user.sendEmailVerification()
+            .addOnSuccessListener { message = "Verification email sent to ${user.email.orEmpty()}" }
+            .addOnFailureListener { message = friendlyAuthError(it) }
+    }
+
+    fun refreshAccount() {
+        val user = auth.currentUser ?: return
+        user.reload().addOnSuccessListener {
+            accountVersion++
+            message = if (user.isEmailVerified) "Email verified" else "Email not verified yet"
+        }.addOnFailureListener { message = friendlyAuthError(it) }
+    }
+
+    fun clearAuthFields() {
+        email = ""
+        password = ""
+        confirmPassword = ""
+        isSignUp = false
+        showPassword = false
+        showConfirmPassword = false
+        linkEmail = ""
+        linkPassword = ""
+        linkConfirmPassword = ""
+        showLinkPassword = false
     }
 
     fun createRoom() {
@@ -244,7 +355,24 @@ class MainActivity : ComponentActivity() {
             Text("Restoring your room…", color = Purple, style = MaterialTheme.typography.bodyLarge)
         }
     } else if (!signedIn) {
-        LoginScreen(email, { email = it }, password, { password = it }, message, busy, { signIn() }, { signUp() })
+        LoginScreen(
+            email = email,
+            onEmailChange = { email = it },
+            password = password,
+            onPasswordChange = { password = it },
+            confirmPassword = confirmPassword,
+            onConfirmPasswordChange = { confirmPassword = it },
+            isSignUp = isSignUp,
+            onModeChange = { isSignUp = it; message = "" },
+            showPassword = showPassword,
+            onToggleShowPassword = { showPassword = !showPassword },
+            showConfirmPassword = showConfirmPassword,
+            onToggleConfirmPassword = { showConfirmPassword = !showConfirmPassword },
+            message = message,
+            busy = busy,
+            onSubmit = { submitAuth() },
+            onForgotPassword = { sendPasswordReset() }
+        )
     } else if (roomId.isBlank()) {
         Column(Modifier.fillMaxSize().background(Pale).padding(22.dp), verticalArrangement = Arrangement.Center) {
             Text("RoomMate", color = Purple, style = MaterialTheme.typography.headlineLarge, fontWeight = FontWeight.ExtraBold)
@@ -269,8 +397,7 @@ class MainActivity : ComponentActivity() {
                 auth.signOut()
                 signedIn = false
                 restoring = false
-                email = ""
-                password = ""
+                clearAuthFields()
                 message = "Signed out"
             }) { Text("Sign out") }
         }
@@ -314,15 +441,44 @@ class MainActivity : ComponentActivity() {
                         Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
                             Text("Account", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
                             Text(user?.email ?: "Guest / anonymous account", color = Color.Gray, style = MaterialTheme.typography.bodySmall)
+                            if (user != null && !user.isAnonymous) {
+                                key(accountVersion) {
+                                    Text(if (user.isEmailVerified) "Email verified" else "Email not verified", color = if (user.isEmailVerified) Purple else Color.Red, style = MaterialTheme.typography.bodySmall)
+                                    if (!user.isEmailVerified) {
+                                        TextButton(onClick = { sendVerificationEmail(user) }, enabled = !busy) { Text("Send verification email") }
+                                        TextButton(onClick = { refreshAccount() }, enabled = !busy) { Text("Refresh verification status") }
+                                    }
+                                }
+                            }
                             if (user != null && user.isAnonymous) {
                                 OutlinedTextField(linkEmail, { linkEmail = it }, label = { Text("Email for permanent account") }, keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Email), modifier = Modifier.fillMaxWidth(), singleLine = true)
-                                OutlinedTextField(linkPassword, { linkPassword = it }, label = { Text("Choose a password") }, visualTransformation = PasswordVisualTransformation(), keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password), modifier = Modifier.fillMaxWidth(), singleLine = true)
+                                OutlinedTextField(
+                                    linkPassword,
+                                    { linkPassword = it },
+                                    label = { Text("Choose a password") },
+                                    visualTransformation = if (showLinkPassword) VisualTransformation.None else PasswordVisualTransformation(),
+                                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password),
+                                    trailingIcon = { TextButton(onClick = { showLinkPassword = !showLinkPassword }) { Text(if (showLinkPassword) "Hide" else "Show") } },
+                                    modifier = Modifier.fillMaxWidth(),
+                                    singleLine = true
+                                )
+                                OutlinedTextField(
+                                    linkConfirmPassword,
+                                    { linkConfirmPassword = it },
+                                    label = { Text("Confirm password") },
+                                    visualTransformation = if (showLinkPassword) VisualTransformation.None else PasswordVisualTransformation(),
+                                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password),
+                                    modifier = Modifier.fillMaxWidth(),
+                                    singleLine = true
+                                )
                                 Button(onClick = {
-                                    if (linkEmail.isBlank() || linkPassword.isBlank()) { message = "Enter email and password"; return@Button }
+                                    if (!isValidEmail(linkEmail)) { message = "Enter a valid email address"; return@Button }
+                                    passwordIssue(linkPassword)?.let { message = it; return@Button }
+                                    if (linkPassword != linkConfirmPassword) { message = "Passwords do not match"; return@Button }
                                     busy = true
                                     user.linkWithCredential(EmailAuthProvider.getCredential(linkEmail.trim(), linkPassword))
-                                        .addOnSuccessListener { busy = false; message = "Account saved permanently"; linkEmail = ""; linkPassword = "" }
-                                        .addOnFailureListener { busy = false; message = it.message ?: "Could not save account" }
+                                        .addOnSuccessListener { busy = false; message = "Account saved permanently"; linkEmail = ""; linkPassword = ""; linkConfirmPassword = "" }
+                                        .addOnFailureListener { error -> busy = false; message = friendlyAuthError(error) }
                                 }, enabled = !busy, modifier = Modifier.fillMaxWidth()) { Text("Make account permanent") }
                             }
                             TextButton(onClick = {
@@ -336,6 +492,7 @@ class MainActivity : ComponentActivity() {
                                 expenses = emptyList()
                                 members = emptyList()
                                 tab = "Home"
+                                clearAuthFields()
                                 message = "Signed out"
                             }) { Text("Sign out") }
                         }
@@ -357,23 +514,55 @@ class MainActivity : ComponentActivity() {
     onEmailChange: (String) -> Unit,
     password: String,
     onPasswordChange: (String) -> Unit,
+    confirmPassword: String,
+    onConfirmPasswordChange: (String) -> Unit,
+    isSignUp: Boolean,
+    onModeChange: (Boolean) -> Unit,
+    showPassword: Boolean,
+    onToggleShowPassword: () -> Unit,
+    showConfirmPassword: Boolean,
+    onToggleConfirmPassword: () -> Unit,
     message: String,
     busy: Boolean,
-    onSignIn: () -> Unit,
-    onSignUp: () -> Unit
+    onSubmit: () -> Unit,
+    onForgotPassword: () -> Unit
 ) {
     Column(Modifier.fillMaxSize().background(Pale).padding(22.dp), verticalArrangement = Arrangement.Center) {
         Text("RoomMate", color = Purple, style = MaterialTheme.typography.headlineLarge, fontWeight = FontWeight.ExtraBold)
         Text("EXPENSES", color = Purple, style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
         Spacer(Modifier.height(8.dp))
-        Text("Sign in to protect your account and expenses.", style = MaterialTheme.typography.bodyLarge)
+        Text(if (isSignUp) "Create an account to protect your expenses." else "Sign in to protect your account and expenses.", style = MaterialTheme.typography.bodyLarge)
         Spacer(Modifier.height(24.dp))
         Card(shape = RoundedCornerShape(24.dp), elevation = CardDefaults.cardElevation(3.dp)) {
             Column(Modifier.padding(18.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
-                OutlinedTextField(email, onEmailChange, label = { Text("Email") }, keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Email), modifier = Modifier.fillMaxWidth(), singleLine = true)
-                OutlinedTextField(password, onPasswordChange, label = { Text("Password") }, visualTransformation = PasswordVisualTransformation(), keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password), modifier = Modifier.fillMaxWidth(), singleLine = true)
-                Button(onClick = onSignIn, enabled = !busy, modifier = Modifier.fillMaxWidth().height(50.dp)) { Text("Sign in") }
-                OutlinedButton(onClick = onSignUp, enabled = !busy, modifier = Modifier.fillMaxWidth().height(50.dp)) { Text("Create account") }
+                OutlinedTextField(email, onEmailChange, label = { Text("Email") }, keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Email), modifier = Modifier.fillMaxWidth(), singleLine = true, enabled = !busy)
+                OutlinedTextField(
+                    password,
+                    onPasswordChange,
+                    label = { Text("Password") },
+                    visualTransformation = if (showPassword) VisualTransformation.None else PasswordVisualTransformation(),
+                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password),
+                    trailingIcon = { TextButton(onClick = onToggleShowPassword, enabled = !busy) { Text(if (showPassword) "Hide" else "Show") } },
+                    modifier = Modifier.fillMaxWidth(),
+                    singleLine = true,
+                    enabled = !busy
+                )
+                if (isSignUp) {
+                    OutlinedTextField(
+                        confirmPassword,
+                        onConfirmPasswordChange,
+                        label = { Text("Confirm password") },
+                        visualTransformation = if (showConfirmPassword) VisualTransformation.None else PasswordVisualTransformation(),
+                        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password),
+                        trailingIcon = { TextButton(onClick = onToggleConfirmPassword, enabled = !busy) { Text(if (showConfirmPassword) "Hide" else "Show") } },
+                        modifier = Modifier.fillMaxWidth(),
+                        singleLine = true,
+                        enabled = !busy
+                    )
+                }
+                Button(onClick = onSubmit, enabled = !busy, modifier = Modifier.fillMaxWidth().height(50.dp)) { Text(if (busy) "Please wait..." else if (isSignUp) "Create account" else "Sign in") }
+                TextButton(onClick = { onModeChange(!isSignUp) }, enabled = !busy, modifier = Modifier.fillMaxWidth()) { Text(if (isSignUp) "Already have an account? Sign in" else "New here? Create an account") }
+                if (!isSignUp) TextButton(onClick = onForgotPassword, enabled = !busy, modifier = Modifier.fillMaxWidth()) { Text("Forgot password?") }
             }
         }
         Spacer(Modifier.height(12.dp))
