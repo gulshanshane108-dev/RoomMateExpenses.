@@ -102,6 +102,15 @@ The included rules file is a starting point, not a security audit. In particular
 ## Build APK with GitHub Actions
 Push the repository to GitHub. Open **Actions → Build RoomMate Expenses Release APK** and download the `RoomMateExpenses-release-apk` artifact after the run succeeds. The workflow also runs on pushes to `main`.
 
+## Install and update on Android (avoid "The app wasn't installed")
+Install **only the APK**, never the ZIP:
+
+1. Open **Releases** (not the green **Code** button): `https://github.com/gulshanshane108-dev/RoomMateExpenses./releases/latest`
+2. Download **`app-release.apk`** (about 8 MB). A file named `RoomMateExpenses-...zip` or any `Source code (zip)` link is the project source and **cannot be installed**.
+3. Tap the downloaded `app-release.apk` and approve the Android install prompt. If your phone blocks it, allow **Install unknown apps** for the file manager you used.
+
+Permanent fix for repeat installs: after the signed release is installed once, use **Profile → Check for updates** (or the in-app **Update available** banner). It downloads the same signed APK, verifies it, and opens the installer — no Downloads folder, no ZIPs, and no signature mismatch. Before that first signed release, remove any older debug build once; debug and release builds use different keys and cannot update each other.
+
 ### Required repository secrets
 The release build is signed with one permanent keystore so later APKs can be installed as direct updates. Add these secrets under **Settings → Secrets and variables → Actions**:
 
