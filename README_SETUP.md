@@ -40,6 +40,39 @@ Android app built with Kotlin, Jetpack Compose, Firebase Email/Password Authenti
 6. Create a Realtime Database and verify its URL/region in Firebase.
 7. Publish database rules appropriate to your test and production needs. The included `firebase-database.rules.json` requires `auth != null` for room reads/writes, restricts room reads to members, lets a user write only their own member record, allows expense writes only by current room members (and updates/deletes only by the expense author), and allows a user to read/write only their own `profile`, `personalExpenses` and `personalNotes`. Room notes use the same membership and author-ownership checks. Publish the updated rules file before testing sign-up profiles, personal mode or expense ownership.
 
+### Deploy rules with Firebase CLI (recommended)
+
+Manual Console publishing is easy to mis-target, especially when a project has more than one database. This repo includes `firebase.json` and `.firebaserc`, so the CLI deploys the checked-in rules to the app's database:
+
+```powershell
+npm install -g firebase-tools
+firebase login
+cd C:\Users\prash\Documents\RoomMateExpenses
+firebase deploy --only database --project roommate-expenses-b6c22
+```
+
+If the project has multiple Realtime Databases, target the one used by the app:
+
+```powershell
+firebase deploy --only database:roommate-expenses-b6c22-default-rtdb --project roommate-expenses-b6c22
+```
+
+After publishing, verify from a terminal. This must return `401` or `403`, not `200`:
+
+```powershell
+curl.exe -o NUL -w "%{http_code}`n" "https://roommate-expenses-b6c22-default-rtdb.firebaseio.com/rooms.json"
+```
+
+You can also open Realtime Database → Rules in the Console and confirm the text starts with `".read": false` and `".write": false` and that the publish timestamp is fresh.
+
+### Automatic rules deployment
+
+`.github/workflows/firebase-rules.yml` deploys the rules whenever `firebase-database.rules.json` changes on `main`, or when the workflow is run manually. Add this repository secret first:
+
+- `FIREBASE_SERVICE_ACCOUNT` — the full JSON key from **Firebase Console → Project settings → Service accounts → Generate new private key**. The service account needs permission to manage Realtime Database rules, for example **Firebase Admin SDK Administrator Service Agent** or **Editor**.
+
+Never commit the service-account JSON. If the secret is missing, the workflow fails with a clear message instead of silently skipping deployment.
+
 The included rules file is a starting point, not a security audit. In particular, the invite-code lookup and write permissions need a trusted backend design before real users rely on the app. Do not use public read/write rules for a deployed app. WhatsApp numbers are user-entered and are not verified by this app.
 
 ## Build APK with GitHub Actions
