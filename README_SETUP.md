@@ -24,6 +24,7 @@ Android app built with Kotlin, Jetpack Compose, Firebase Email/Password Authenti
 - Remove member asks for confirmation; removed members can no longer write expenses because database rules check room membership
 - Saved rooms are remembered after joining, so switching back from personal mode does not require the code again; multiple joined rooms appear as buttons
 - Notebook tab in both room and personal modes for short shared/private notes
+- Room mode has a single **Room** tab with Overview, Members, Expenses and Notes sub-sections; personal mode keeps Home, Expenses and Notes
 - Room dashboard includes a category pie chart for the current month
 - Categories: Food, Rent, Bills, Travel, Shopping and Other
 - Live member and expense lists
@@ -31,6 +32,15 @@ Android app built with Kotlin, Jetpack Compose, Firebase Email/Password Authenti
 - Launcher icon
 - GitHub Actions workflow to build and upload a signed release APK
 - In-app GitHub Releases updater: checks for new versions, verifies the APK SHA-256, and opens the Android installer
+- Notification bell in the top-right of every main screen with an unread badge
+- System notifications for new room expenses, notes, members and new app versions
+- Firebase Cloud Messaging push for new releases via the `updates` topic
+
+## Notifications
+
+The bell icon in the top-right opens the notification history. New room activity added by other members (expenses, notes and joins) creates both a bell badge and an Android system notification. New releases create an **Update available** notification in the same way. On Android 13+ the app asks for notification permission once; if it is denied, alerts still appear in the bell.
+
+For release push notifications, the app subscribes to the FCM topic `updates`. The release workflow sends a message to that topic after publishing a GitHub Release when the repository secret `FIREBASE_SERVICE_ACCOUNT` is configured. The push only alerts users; the app still requires tapping **Download & install** and approving the Android install screen.
 
 ## Automatic updates
 
@@ -91,6 +101,15 @@ The included rules file is a starting point, not a security audit. In particular
 
 ## Build APK with GitHub Actions
 Push the repository to GitHub. Open **Actions → Build RoomMate Expenses Release APK** and download the `RoomMateExpenses-release-apk` artifact after the run succeeds. The workflow also runs on pushes to `main`.
+
+## Install and update on Android (avoid "The app wasn't installed")
+Install **only the APK**, never the ZIP:
+
+1. Open **Releases** (not the green **Code** button): `https://github.com/gulshanshane108-dev/RoomMateExpenses./releases/latest`
+2. Download **`app-release.apk`** (about 8 MB). A file named `RoomMateExpenses-...zip` or any `Source code (zip)` link is the project source and **cannot be installed**.
+3. Tap the downloaded `app-release.apk` and approve the Android install prompt. If your phone blocks it, allow **Install unknown apps** for the file manager you used.
+
+Permanent fix for repeat installs: after the signed release is installed once, use **Profile → Check for updates** (or the in-app **Update available** banner). It downloads the same signed APK, verifies it, and opens the installer — no Downloads folder, no ZIPs, and no signature mismatch. Before that first signed release, remove any older debug build once; debug and release builds use different keys and cannot update each other.
 
 ### Required repository secrets
 The release build is signed with one permanent keystore so later APKs can be installed as direct updates. Add these secrets under **Settings → Secrets and variables → Actions**:
