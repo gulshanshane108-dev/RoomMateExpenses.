@@ -2,7 +2,10 @@ package com.roommate.expenses
 
 import android.app.DatePickerDialog
 import android.content.Context
+import android.content.Intent
+import android.net.Uri
 import android.os.Bundle
+import android.provider.Settings
 import android.widget.DatePicker
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
@@ -39,6 +42,9 @@ import java.text.SimpleDateFormat
 import java.util.*
 import org.json.JSONArray
 import org.json.JSONObject
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 
 data class Member(val uid: String = "", val name: String = "", val whatsapp: String = "", val role: String = "member")
 data class Expense(val id: String = "", val memberUid: String = "", val memberName: String = "", val item: String = "", val amount: Double = 0.0, val category: String = "Other", val date: Long = System.currentTimeMillis())
@@ -147,11 +153,69 @@ class MainActivity : ComponentActivity() {
     var expenseToDelete by remember { mutableStateOf<Expense?>(null) }
     var memberToRemove by remember { mutableStateOf<Member?>(null) }
     var noteToDelete by remember { mutableStateOf<Note?>(null) }
+    var availableUpdate by remember { mutableStateOf<AppUpdate?>(null) }
+    var updateBusy by remember { mutableStateOf(false) }
+    var updateError by remember { mutableStateOf("") }
 
     val context = LocalContext.current
+    val updateScope = rememberCoroutineScope()
     val prefs = remember { context.getSharedPreferences("room_session", Context.MODE_PRIVATE) }
 
     fun savedRoomsKey() = "saved_rooms_$uid"
+
+    fun checkForUpdate(force: Boolean = false) {
+        updateScope.launch {
+            if (!force && BuildConfig.DEBUG) return@launch
+            val now = System.currentTimeMillis()
+            if (!force && now - prefs.getLong("last_update_check", 0L) < 6 * 60 * 60 * 1000L) return@launch
+            prefs.edit().putLong("last_update_check", now).apply()
+            if (force) updateBusy = true
+            updateError = ""
+            try {
+                val found = withContext(Dispatchers.IO) { AppUpdater.check() }
+                if (found != null && prefs.getInt("update_skipped_code", -1) != found.versionCode) {
+                    availableUpdate = found
+                } else if (force) {
+                    message = "You're up to date"
+                }
+            } catch (_: Exception) {
+                if (force) message = "Could not check for updates. Check your internet connection."
+            } finally {
+                if (force) updateBusy = false
+            }
+        }
+    }
+
+    fun downloadAndInstall(update: AppUpdate) {
+        if (android.os.Build.VERSION.SDK_INT >= 26 && !context.packageManager.canRequestPackageInstalls()) {
+            val intent = Intent(
+                Settings.ACTION_MANAGE_UNKNOWN_APP_SOURCES,
+                Uri.parse("package:${context.packageName}")
+            ).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+            context.startActivity(intent)
+            updateError = "Allow this app to install updates, then tap Update again"
+            return
+        }
+        updateBusy = true
+        updateError = ""
+        updateScope.launch {
+            try {
+                val file = withContext(Dispatchers.IO) { AppUpdater.download(context, update.apkUrl) }
+                val valid = withContext(Dispatchers.IO) { AppUpdater.verify(file, update.sha256) }
+                if (!valid) {
+                    file.delete()
+                    updateError = "Update failed verification. Please try again later."
+                } else {
+                    AppUpdater.install(context, file)
+                    availableUpdate = null
+                }
+            } catch (e: Exception) {
+                updateError = e.message ?: "Could not download the update"
+            } finally {
+                updateBusy = false
+            }
+        }
+    }
 
     fun loadSavedRooms() {
         if (uid.isBlank()) { savedRooms = emptyList(); return }
@@ -415,6 +479,8 @@ class MainActivity : ComponentActivity() {
             message = "Sign in to continue"
         }
     }
+
+    LaunchedEffect(Unit) { checkForUpdate() }
 
     DisposableEffect(Unit) {
         val listener = FirebaseAuth.AuthStateListener { a ->
@@ -749,6 +815,18 @@ class MainActivity : ComponentActivity() {
                 clearAuthFields()
                 message = "Signed out"
             }) { Text("Sign out") }
+            availableUpdate?.let { update ->
+                UpdateBanner(
+                    update = update,
+                    busy = updateBusy,
+                    onUpdate = { downloadAndInstall(update) },
+                    onLater = { availableUpdate = null },
+                    onSkip = {
+                        prefs.edit().putInt("update_skipped_code", update.versionCode).apply()
+                        availableUpdate = null
+                    }
+                )
+            }
         }
     } else {
         Column(Modifier.fillMaxSize().background(Color(0xFFFAF9FC))) {
@@ -760,6 +838,18 @@ class MainActivity : ComponentActivity() {
                 } else {
                     Row(verticalAlignment = Alignment.CenterVertically) { Text("Invite code  $invite", color = Color.White); Spacer(Modifier.weight(1f)); Text("${members.size} members", color = Color.White) }
                 }
+            }
+            availableUpdate?.let { update ->
+                UpdateBanner(
+                    update = update,
+                    busy = updateBusy,
+                    onUpdate = { downloadAndInstall(update) },
+                    onLater = { availableUpdate = null },
+                    onSkip = {
+                        prefs.edit().putInt("update_skipped_code", update.versionCode).apply()
+                        availableUpdate = null
+                    }
+                )
             }
             when (tab) {
                 "Home" -> LazyColumn(Modifier.weight(1f).padding(horizontal = 16.dp), contentPadding = PaddingValues(vertical = 16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
@@ -904,6 +994,7 @@ class MainActivity : ComponentActivity() {
                     Text("Your total this month", color = Color.Gray); Text(money(personalTotal), style = MaterialTheme.typography.headlineMedium, color = Purple, fontWeight = FontWeight.Bold)
                     Text(if (personalMode) "Personal mode — no room or invite code" else "Room code: $invite")
                     Text("RoomMate Expenses · INR (₹)", color = Color.Gray)
+                    TextButton(onClick = { checkForUpdate(force = true) }, enabled = !updateBusy, modifier = Modifier.fillMaxWidth()) { Text(if (updateBusy) "Checking for updates..." else "Check for updates") }
                     if (!personalMode) TextButton(onClick = { clearRoomSession(); detachAllListeners(); roomId = ""; invite = ""; expenses = emptyList(); members = emptyList(); tab = "Home"; message = "Left room on this device" }) { Text("Leave this room on this device") }
                 }
             }
@@ -935,6 +1026,14 @@ class MainActivity : ComponentActivity() {
                 text = { Text("This note will be permanently removed.") },
                 confirmButton = { TextButton(onClick = { deleteNote(n) }) { Text("Delete", color = Color.Red) } },
                 dismissButton = { TextButton(onClick = { noteToDelete = null }) { Text("Cancel") } }
+            )
+        }
+        if (updateError.isNotBlank()) {
+            AlertDialog(
+                onDismissRequest = { updateError = "" },
+                title = { Text("Update problem") },
+                text = { Text(updateError) },
+                confirmButton = { TextButton(onClick = { updateError = "" }) { Text("OK") } }
             )
         }
     }
@@ -1006,6 +1105,34 @@ class MainActivity : ComponentActivity() {
         }
         Spacer(Modifier.height(12.dp))
         Text(message, color = Purple, style = MaterialTheme.typography.bodySmall)
+    }
+}
+
+@Composable private fun UpdateBanner(
+    update: AppUpdate,
+    busy: Boolean,
+    onUpdate: () -> Unit,
+    onLater: () -> Unit,
+    onSkip: () -> Unit
+) {
+    Card(
+        modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp),
+        colors = CardDefaults.cardColors(containerColor = Pale),
+        shape = RoundedCornerShape(16.dp)
+    ) {
+        Column(Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+            Text("Update available: v${update.versionName}", color = Purple, fontWeight = FontWeight.Bold)
+            Text("Download the signed APK, then approve the install to keep your data.", style = MaterialTheme.typography.bodySmall)
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Button(onClick = onUpdate, enabled = !busy) {
+                    if (busy) CircularProgressIndicator(modifier = Modifier.size(16.dp), strokeWidth = 2.dp, color = Color.White)
+                    else Text("Download & install")
+                }
+                Spacer(Modifier.width(8.dp))
+                TextButton(onClick = onLater, enabled = !busy) { Text("Later") }
+                TextButton(onClick = onSkip, enabled = !busy) { Text("Skip this version") }
+            }
+        }
     }
 }
 
