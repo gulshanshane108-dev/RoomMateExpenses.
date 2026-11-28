@@ -30,6 +30,20 @@ Android app built with Kotlin, Jetpack Compose, Firebase Email/Password Authenti
 - Admin badge and removal UI
 - Launcher icon
 - GitHub Actions workflow to build and upload a signed release APK
+- In-app GitHub Releases updater: checks for new versions, verifies the APK SHA-256, and opens the Android installer
+
+## Automatic updates
+
+The release workflow in `.github/workflows/android-apk.yml` builds the signed APK and publishes it as a GitHub Release tagged with the app's `versionName` (for example `v1.11`). The release notes contain the `versionCode` and the APK's SHA-256 digest. The app reads those release notes from GitHub over HTTPS and only downloads the release asset when the published `versionCode` is newer than the installed one.
+
+Users see an **Update available** card in the app. Tapping **Download & install** downloads the APK, verifies its SHA-256 against the digest in the release notes, and opens the Android installer. On Android 8+ the user may first need to allow this app to install unknown apps from the system settings screen that opens. The final Install tap is always required by Android; the app cannot install silently.
+
+Rules for safe updates:
+
+- Increase `versionCode` for every release. Keep the `versionName` tag unique, such as `v1.12`.
+- Keep the same release signing key. A different keystore prevents an in-place update and forces users to uninstall first.
+- Never publish an APK whose digest does not match the `sha256` line in the release notes.
+- Manual check is available at **Profile → Check for updates**; automatic checks run at most once every six hours in release builds.
 
 ## Firebase setup
 1. Keep your project's `app/google-services.json` in place.

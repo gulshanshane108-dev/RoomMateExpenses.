@@ -6,6 +6,9 @@ on:
     branches:
       - main
 
+permissions:
+  contents: write
+
 env:
   RELEASE_KEYSTORE_B64: ${{ secrets.RELEASE_KEYSTORE_B64 }}
   RELEASE_STORE_PASSWORD: ${{ secrets.RELEASE_STORE_PASSWORD }}
@@ -40,3 +43,25 @@ jobs:
           name: RoomMateExpenses-release-apk
           path: app/build/outputs/apk/release/app-release.apk
           if-no-files-found: error
+
+      - name: Publish signed APK to GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          APK="app/build/outputs/apk/release/app-release.apk"
+          VERSION_CODE=$(grep -oP 'versionCode\s*=\s*\K[0-9]+' app/build.gradle.kts | head -n 1)
+          VERSION_NAME=$(grep -oP 'versionName\s*=\s*"\K[^"]+' app/build.gradle.kts | head -n 1)
+          TAG="v${VERSION_NAME}"
+          SHA256=$(sha256sum "$APK" | cut -d' ' -f1)
+          {
+            echo "RoomMate Expenses ${VERSION_NAME}"
+            echo "versionCode=${VERSION_CODE}"
+            echo "sha256=${SHA256}"
+          } > release-notes.txt
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            gh release upload "$TAG" "$APK" --clobber
+            gh release edit "$TAG" --title "RoomMate Expenses ${VERSION_NAME}" --notes-file release-notes.txt
+          else
+            gh release create "$TAG" "$APK" --title "RoomMate Expenses ${VERSION_NAME}" --notes-file release-notes.txt
+          fi
