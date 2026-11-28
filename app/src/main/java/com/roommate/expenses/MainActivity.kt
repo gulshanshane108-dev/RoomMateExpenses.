@@ -313,7 +313,13 @@ class MainActivity : ComponentActivity() {
         roomId = id
         notes = emptyList()
         saveRoomSession()
-        db.child("rooms").child(id).child("info").child("name").get().addOnSuccessListener { roomName = it.getValue(String::class.java) ?: "My Room" }
+        db.child("rooms").child(id).child("info").child("name").get()
+            .addOnSuccessListener { snap ->
+                val name = snap.getValue(String::class.java) ?: "My Room"
+                roomName = name
+                saveRoomLocally(id, name, invite)
+            }
+            .addOnFailureListener { roomName = "My Room" }
         memberListener = object : ValueEventListener {
             override fun onDataChange(s: DataSnapshot) { members = s.children.mapNotNull { it.getValue(Member::class.java) }; isAdmin = s.child(uid).child("role").getValue(String::class.java) == "admin" }
             override fun onCancelled(e: DatabaseError) { message = e.message }
