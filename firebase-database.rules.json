@@ -14,6 +14,15 @@
         "profile": {
           ".write": "auth != null && auth.uid == $uid"
         },
+        "savedRooms": {
+          ".write": "auth != null && auth.uid == $uid"
+        },
+        "activeRoom": {
+          ".write": "auth != null && auth.uid == $uid"
+        },
+        "roomMemberships": {
+          ".write": "auth != null && auth.uid == $uid"
+        },
         "personalExpenses": {
           "$expenseId": {
             ".write": "auth != null && auth.uid == $uid && (!data.exists() || data.child('memberUid').val() == auth.uid)"

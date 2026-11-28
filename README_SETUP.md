@@ -11,20 +11,20 @@ Android app built with Kotlin, Jetpack Compose, Firebase Email/Password Authenti
 - Friendly authentication error messages and disabled buttons while a request is running
 - **Link an existing anonymous account to email/password so its UID, rooms and expenses are preserved**
 - Sign out and profile/account section with soft email-verification status and resend/refresh actions
-- Firebase Auth state handling; sign-out clears the locally saved room session
+- Firebase Auth state handling; sign-out clears the active room but keeps rooms saved under the account
 - **Rooms are optional**: create a room or join with a six-digit invite code from the Profile tab
 - Personal expenses are always available in the Home tab and stored per user under `users/{uid}/personalExpenses`
 - There is no personal/room switch: Home, Room and Profile are three fixed bottom sections
 - WhatsApp number is optional; personal expenses never show a room member's phone number
-- The active room session is restored automatically after an app restart
+- The active room is saved under the signed-in account in Firebase and is restored after an app restart, reinstall, or login on another device
 - Room-wide monthly spending dashboard and personal monthly total
 - Add, edit and delete expense entries with a date field: today is selected by default and earlier dates can be chosen manually
 - Filter expenses by name and by a from/to date range
 - Only the member who added an expense can edit or delete it; deletion always asks for confirmation
 - Remove member asks for confirmation; removed members can no longer write expenses because database rules check room membership
-- Saved rooms are remembered after joining and listed in Profile, so opening a joined room does not require the code again
+- Saved rooms and room memberships are stored under `users/{uid}/savedRooms` and `users/{uid}/roomMemberships`, and are listed in Profile, so opening a joined room does not require the code again
 - Notebook is available in both Home (private) and Room (shared) sections
-- **Home** keeps personal Overview, Expenses and Notes; **Room** keeps Overview, Members, Expenses and Notes; **Profile** holds account details, create room, join room and saved rooms
+- **Home** keeps personal Overview, Expenses and Notes; **Room** keeps Overview, Members, Expenses and Notes; **Profile** holds account details, create room, join room and saved rooms only (no personal spending or name/mobile editing)
 - Room dashboard includes a category pie chart for the current month
 - Categories: Food, Rent, Bills, Travel, Shopping and Other
 - Live member and expense lists
@@ -33,12 +33,12 @@ Android app built with Kotlin, Jetpack Compose, Firebase Email/Password Authenti
 - GitHub Actions workflow to build and upload a signed release APK
 - In-app GitHub Releases updater: checks for new versions, verifies the APK SHA-256, and opens the Android installer
 - Notification bell in the top-right of every main screen with an unread badge
-- System notifications for new room expenses, notes, members and new app versions
+- System notifications for new room expenses, notes, members, available updates, and the first launch after every successful app update
 - Firebase Cloud Messaging push for new releases via the `updates` topic
 
 ## Notifications
 
-The bell icon in the top-right opens the notification history. New room activity added by other members (expenses, notes and joins) creates both a bell badge and an Android system notification. New releases create an **Update available** notification in the same way. On Android 13+ the app asks for notification permission once; if it is denied, alerts still appear in the bell.
+The bell icon in the top-right opens the notification history. New room activity added by other members (expenses, notes and joins) creates both a bell badge and an Android system notification. New releases create an **Update available** notification in the same way. The first launch after an update records an **App updated to vX** notification so every successful new version is visible in the bell. On Android 13+ the app asks for notification permission once; if it is denied, alerts still appear in the bell.
 
 For release push notifications, the app subscribes to the FCM topic `updates`. The release workflow sends a message to that topic after publishing a GitHub Release when the repository secret `FIREBASE_SERVICE_ACCOUNT` is configured. The push only alerts users; the app still requires tapping **Download & install** and approving the Android install screen.
 
