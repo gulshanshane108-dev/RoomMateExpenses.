@@ -12,19 +12,19 @@ Android app built with Kotlin, Jetpack Compose, Firebase Email/Password Authenti
 - **Link an existing anonymous account to email/password so its UID, rooms and expenses are preserved**
 - Sign out and profile/account section with soft email-verification status and resend/refresh actions
 - Firebase Auth state handling; sign-out clears the locally saved room session
-- **Rooms are optional**: create a room, join with a six-digit invite code, or continue in personal mode
-- Personal mode stores expenses per user under `users/{uid}/personalExpenses`
-- Switch between personal mode and room mode from Profile at any time
-- WhatsApp number is optional; personal mode never shows a room member's phone number
-- Active room or personal session is restored automatically after an app restart
+- **Rooms are optional**: create a room or join with a six-digit invite code from the Profile tab
+- Personal expenses are always available in the Home tab and stored per user under `users/{uid}/personalExpenses`
+- There is no personal/room switch: Home, Room and Profile are three fixed bottom sections
+- WhatsApp number is optional; personal expenses never show a room member's phone number
+- The active room session is restored automatically after an app restart
 - Room-wide monthly spending dashboard and personal monthly total
 - Add, edit and delete expense entries with a date field: today is selected by default and earlier dates can be chosen manually
 - Filter expenses by name and by a from/to date range
 - Only the member who added an expense can edit or delete it; deletion always asks for confirmation
 - Remove member asks for confirmation; removed members can no longer write expenses because database rules check room membership
-- Saved rooms are remembered after joining, so switching back from personal mode does not require the code again; multiple joined rooms appear as buttons
-- Notebook tab in both room and personal modes for short shared/private notes
-- Room mode has a single **Room** tab with Overview, Members, Expenses and Notes sub-sections; personal mode keeps Home, Expenses and Notes
+- Saved rooms are remembered after joining and listed in Profile, so opening a joined room does not require the code again
+- Notebook is available in both Home (private) and Room (shared) sections
+- **Home** keeps personal Overview, Expenses and Notes; **Room** keeps Overview, Members, Expenses and Notes; **Profile** holds account details, create room, join room and saved rooms
 - Room dashboard includes a category pie chart for the current month
 - Categories: Food, Rent, Bills, Travel, Shopping and Other
 - Live member and expense lists
@@ -62,7 +62,7 @@ Rules for safe updates:
 4. Optional: customize **Templates → Password reset** and **Verify email** so users recognize the messages.
 5. Keep **Anonymous** enabled only if you still have existing guest accounts to migrate; the app now opens on a sign-in screen for new users, and the Profile tab lets an existing guest link an email/password to keep the same UID.
 6. Create a Realtime Database and verify its URL/region in Firebase.
-7. Publish database rules appropriate to your test and production needs. The included `firebase-database.rules.json` requires `auth != null` for room reads/writes, restricts room reads to members, lets a user write only their own member record, allows expense writes only by current room members (and updates/deletes only by the expense author), and allows a user to read/write only their own `profile`, `personalExpenses` and `personalNotes`. Room notes use the same membership and author-ownership checks. Publish the updated rules file before testing sign-up profiles, personal mode or expense ownership.
+7. Publish database rules appropriate to your test and production needs. The included `firebase-database.rules.json` requires `auth != null` for room reads/writes, restricts room reads to members, lets a user write only their own member record, allows expense writes only by current room members (and updates/deletes only by the expense author), and allows a user to read/write only their own `profile`, `personalExpenses` and `personalNotes`. Room notes use the same membership and author-ownership checks. Publish the updated rules file before testing sign-up profiles, personal expenses or expense ownership.
 
 ### Deploy rules with Firebase CLI (recommended)
 
