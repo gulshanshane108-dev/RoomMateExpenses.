@@ -15,8 +15,8 @@ android {
         applicationId = "com.roommate.expenses"
         minSdk = 23
         targetSdk = 35
-        versionCode = 15
-        versionName = "1.14"
+        versionCode = 16
+        versionName = "1.15"
     }
 
     val releaseSigning = signingConfigs.create("release") {

@@ -242,8 +242,13 @@ class MainActivity : ComponentActivity() {
         val previousCode = prefs.getInt("launch_version_code", 0)
         val currentCode = BuildConfig.VERSION_CODE
         if (previousCode != currentCode) {
+            val previousAppIndicators = prefs.all.keys.any { key ->
+                key == "last_update_check" || key == "update_skipped_code" ||
+                    key.startsWith("roomId_") || key.startsWith("saved_rooms_") ||
+                    key.startsWith("update_notified_")
+            }
             prefs.edit().putInt("launch_version_code", currentCode).apply()
-            if (previousCode != 0) {
+            if (previousCode != 0 || previousAppIndicators) {
                 notifyEvent(
                     "app-updated-$currentCode",
                     "App updated to v${BuildConfig.VERSION_NAME}",
