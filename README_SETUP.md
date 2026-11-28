@@ -18,10 +18,16 @@ Android app built with Kotlin, Jetpack Compose, Firebase Email/Password Authenti
 - WhatsApp number is optional; personal mode never shows a room member's phone number
 - Active room or personal session is restored automatically after an app restart
 - Room-wide monthly spending dashboard and personal monthly total
-- Add, edit and delete expense entries
+- Add, edit and delete expense entries with a date field: today is selected by default and earlier dates can be chosen manually
+- Filter expenses by name and by a from/to date range
+- Only the member who added an expense can edit or delete it; deletion always asks for confirmation
+- Remove member asks for confirmation; removed members can no longer write expenses because database rules check room membership
+- Saved rooms are remembered after joining, so switching back from personal mode does not require the code again; multiple joined rooms appear as buttons
+- Notebook tab in both room and personal modes for short shared/private notes
+- Room dashboard includes a category pie chart for the current month
 - Categories: Food, Rent, Bills, Travel, Shopping and Other
 - Live member and expense lists
-- Admin badge and basic member removal UI
+- Admin badge and removal UI
 - Launcher icon
 - GitHub Actions workflow to build and upload a signed release APK
 
@@ -32,7 +38,7 @@ Android app built with Kotlin, Jetpack Compose, Firebase Email/Password Authenti
 4. Optional: customize **Templates → Password reset** and **Verify email** so users recognize the messages.
 5. Keep **Anonymous** enabled only if you still have existing guest accounts to migrate; the app now opens on a sign-in screen for new users, and the Profile tab lets an existing guest link an email/password to keep the same UID.
 6. Create a Realtime Database and verify its URL/region in Firebase.
-7. Publish database rules appropriate to your test and production needs. The included `firebase-database.rules.json` requires `auth != null` for room reads/writes, restricts room reads to members, lets a user write only their own member record, and allows a user to read/write only their own `profile` and `personalExpenses`. Publish the updated rules file before testing sign-up profiles or personal mode.
+7. Publish database rules appropriate to your test and production needs. The included `firebase-database.rules.json` requires `auth != null` for room reads/writes, restricts room reads to members, lets a user write only their own member record, allows expense writes only by current room members (and updates/deletes only by the expense author), and allows a user to read/write only their own `profile`, `personalExpenses` and `personalNotes`. Room notes use the same membership and author-ownership checks. Publish the updated rules file before testing sign-up profiles, personal mode or expense ownership.
 
 The included rules file is a starting point, not a security audit. In particular, the invite-code lookup and write permissions need a trusted backend design before real users rely on the app. Do not use public read/write rules for a deployed app. WhatsApp numbers are user-entered and are not verified by this app.
 
