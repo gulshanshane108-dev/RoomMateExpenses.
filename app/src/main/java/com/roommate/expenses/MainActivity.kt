@@ -190,7 +190,21 @@ class MainActivity : ComponentActivity() {
 
     val updateScope = rememberCoroutineScope()
     val notificationPermissionLauncher = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
-        if (!granted) message = "Notifications are off. Alerts are still shown in the bell icon."
+        if (granted) {
+            val code = BuildConfig.VERSION_CODE
+            val id = "app-updated-$code"
+            if (AppNotifications.list(context).any { it.id == id }) {
+                AppNotifications.show(
+                    context,
+                    id,
+                    "App updated to v${BuildConfig.VERSION_NAME}",
+                    "RoomMate Expenses v${BuildConfig.VERSION_NAME} installed successfully.",
+                    "update"
+                )
+            }
+        } else {
+            message = "Notifications are off. Alerts are still shown in the bell icon."
+        }
     }
     val unreadCount = notifications.count { !it.read }
 
@@ -224,6 +238,22 @@ class MainActivity : ComponentActivity() {
         }
     }
 
+    LaunchedEffect(Unit) {
+        val previousCode = prefs.getInt("launch_version_code", 0)
+        val currentCode = BuildConfig.VERSION_CODE
+        if (previousCode != currentCode) {
+            prefs.edit().putInt("launch_version_code", currentCode).apply()
+            if (previousCode != 0) {
+                notifyEvent(
+                    "app-updated-$currentCode",
+                    "App updated to v${BuildConfig.VERSION_NAME}",
+                    "RoomMate Expenses v${BuildConfig.VERSION_NAME} installed successfully.",
+                    "update"
+                )
+            }
+        }
+    }
+
     DisposableEffect(Unit) {
         val receiver = object : BroadcastReceiver() {
             override fun onReceive(c: Context?, intent: Intent?) { refreshNotifications() }
@@ -238,6 +268,22 @@ class MainActivity : ComponentActivity() {
     }
 
     fun savedRoomsKey() = "saved_rooms_$uid"
+
+    fun activeRoomKey() = "active_room_$uid"
+
+    fun legacySavedRooms(): List<SavedRoom> {
+        val raw = prefs.getString(savedRoomsKey(), "").orEmpty()
+        if (raw.isBlank()) return emptyList()
+        return try {
+            val arr = JSONArray(raw)
+            (0 until arr.length()).mapNotNull { i ->
+                val o = arr.optJSONObject(i) ?: return@mapNotNull null
+                SavedRoom(o.optString("id"), o.optString("name"), o.optString("invite"))
+            }.filter { it.id.isNotBlank() }
+        } catch (_: Exception) {
+            emptyList()
+        }
+    }
 
     fun checkForUpdate(force: Boolean = false) {
         updateScope.launch {
@@ -302,27 +348,60 @@ class MainActivity : ComponentActivity() {
         }
     }
 
-    fun loadSavedRooms() {
-        if (uid.isBlank()) { savedRooms = emptyList(); return }
-        val raw = prefs.getString(savedRoomsKey(), "").orEmpty()
-        if (raw.isBlank()) { savedRooms = emptyList(); return }
-        try {
-            val arr = JSONArray(raw)
-            savedRooms = (0 until arr.length()).mapNotNull { i ->
-                val o = arr.optJSONObject(i) ?: return@mapNotNull null
-                SavedRoom(o.optString("id"), o.optString("name"), o.optString("invite"))
-            }.filter { it.id.isNotBlank() }
-        } catch (_: Exception) {
-            savedRooms = emptyList()
-        }
-    }
-
-    fun persistSavedRooms(rooms: List<SavedRoom>) {
+    fun writeSavedRooms(rooms: List<SavedRoom>) {
         if (uid.isBlank()) return
+        val data = rooms.associate { room ->
+            room.id to mapOf("name" to room.name, "invite" to room.invite)
+        }
+        db.child("users").child(uid).child("savedRooms").setValue(data)
+        db.child("users").child(uid).child("roomMemberships").setValue(rooms.associate { it.id to true })
         val arr = JSONArray()
-        rooms.forEach { r -> arr.put(JSONObject().put("id", r.id).put("name", r.name).put("invite", r.invite)) }
+        rooms.forEach { room -> arr.put(JSONObject().put("id", room.id).put("name", room.name).put("invite", room.invite)) }
         prefs.edit().putString(savedRoomsKey(), arr.toString()).apply()
         savedRooms = rooms
+    }
+
+    fun loadSavedRooms(onLoaded: (List<SavedRoom>) -> Unit = {}) {
+        if (uid.isBlank()) {
+            savedRooms = emptyList()
+            onLoaded(emptyList())
+            return
+        }
+        db.child("users").child(uid).child("savedRooms").get()
+            .addOnSuccessListener { snap ->
+                val cloud = snap.children.mapNotNull { child ->
+                    val id = child.key.orEmpty()
+                    if (id.isBlank()) null else SavedRoom(
+                        id,
+                        child.child("name").getValue(String::class.java).orEmpty(),
+                        child.child("invite").getValue(String::class.java).orEmpty()
+                    )
+                }
+                val local = legacySavedRooms()
+                val rooms = if (cloud.isEmpty() && local.isNotEmpty()) local else cloud
+                savedRooms = rooms
+                if (cloud.isEmpty() && local.isNotEmpty()) writeSavedRooms(local)
+                onLoaded(rooms)
+            }
+            .addOnFailureListener {
+                val local = legacySavedRooms()
+                savedRooms = local
+                onLoaded(local)
+            }
+    }
+
+    fun persistSavedRooms(rooms: List<SavedRoom>) = writeSavedRooms(rooms)
+
+    fun setActiveRoom(id: String) {
+        if (uid.isBlank()) return
+        prefs.edit().putString(activeRoomKey(), id).apply()
+        db.child("users").child(uid).child("activeRoom").setValue(id)
+    }
+
+    fun clearActiveRoom() {
+        if (uid.isBlank()) return
+        prefs.edit().remove(activeRoomKey()).apply()
+        db.child("users").child(uid).child("activeRoom").setValue("")
     }
 
     fun saveRoomLocally(id: String, name: String, code: String) {
@@ -331,10 +410,14 @@ class MainActivity : ComponentActivity() {
         val index = updated.indexOfFirst { it.id == id }
         val entry = SavedRoom(id, name.ifBlank { "My Room" }, code)
         if (index >= 0) updated[index] = entry else updated.add(entry)
-        persistSavedRooms(updated)
+        writeSavedRooms(updated)
+        setActiveRoom(id)
     }
 
-    fun removeSavedRoom(id: String) = persistSavedRooms(savedRooms.filterNot { it.id == id })
+    fun removeSavedRoom(id: String) {
+        persistSavedRooms(savedRooms.filterNot { it.id == id })
+        if (roomId == id) clearActiveRoom()
+    }
 
     var memberListener by remember { mutableStateOf<ValueEventListener?>(null) }
     var expenseListener by remember { mutableStateOf<ValueEventListener?>(null) }
@@ -353,7 +436,9 @@ class MainActivity : ComponentActivity() {
             .remove("myName_$userId")
             .remove("whatsapp_$userId")
             .remove("invite_$userId")
+            .remove("active_room_$userId")
             .apply()
+        db.child("users").child(userId).child("activeRoom").setValue("")
     }
 
     fun clearRoomSession() = clearSessionFor(uid)
@@ -366,6 +451,7 @@ class MainActivity : ComponentActivity() {
             .putString("whatsapp_$uid", whatsapp)
             .putString("invite_$uid", invite)
             .apply()
+        setActiveRoom(roomId)
     }
 
     fun loadProfile(onLoaded: () -> Unit = {}) {
@@ -550,39 +636,85 @@ class MainActivity : ComponentActivity() {
     }
 
     fun restoreRoom(user: FirebaseUser, signedInMessage: String = "You're connected") {
-        uid = user.uid
+        val userId = user.uid
+        uid = userId
         signedIn = true
-        loadSavedRooms()
+        restoring = true
         loadProfile()
         watchPersonal()
-        val savedRoom = prefs.getString("roomId_${user.uid}", "").orEmpty()
-        restoring = savedRoom.isNotBlank()
-        if (savedRoom.isBlank()) {
+
+        fun finishRestore(resultMessage: String) {
             restoring = false
-            message = signedInMessage
-            return
+            tab = "Room"
+            message = resultMessage
         }
-        db.child("rooms").child(savedRoom).child("members").child(user.uid).get()
-            .addOnSuccessListener { snap ->
+
+        fun restoreSavedRoom(roomId: String, rooms: List<SavedRoom>) {
+            if (roomId.isBlank() || roomId == "none") {
                 restoring = false
-                if (!snap.exists()) {
-                    clearSessionFor(user.uid)
-                    message = signedInMessage
-                    return@addOnSuccessListener
+                message = signedInMessage
+                return
+            }
+            val entry = rooms.firstOrNull { it.id == roomId }
+            invite = entry?.invite?.takeIf { it.isNotBlank() }
+                ?: prefs.getString("invite_$userId", "").orEmpty()
+            db.child("rooms").child(roomId).child("members").child(userId).get()
+                .addOnSuccessListener { snap ->
+                    if (!snap.exists()) {
+                        removeSavedRoom(roomId)
+                        clearActiveRoom()
+                        restoring = false
+                        message = signedInMessage
+                        return@addOnSuccessListener
+                    }
+                    val member = snap.getValue(Member::class.java)
+                    myName = member?.name?.takeIf { it.isNotBlank() } ?: myName
+                    whatsapp = member?.whatsapp?.takeIf { it.isNotBlank() } ?: whatsapp
+                    fun activate(name: String) {
+                        if (entry == null) saveRoomLocally(roomId, name.ifBlank { "My Room" }, invite)
+                        setActiveRoom(roomId)
+                        watchRoom(roomId)
+                        finishRestore(if (signedInMessage == "You're connected") "Room restored" else signedInMessage)
+                    }
+                    db.child("rooms").child(roomId).child("info").child("name").get()
+                        .addOnSuccessListener { nameSnap -> activate(nameSnap.getValue(String::class.java).orEmpty()) }
+                        .addOnFailureListener { activate("My Room") }
                 }
-                val member = snap.getValue(Member::class.java)
-                myName = member?.name?.takeIf { it.isNotBlank() } ?: prefs.getString("myName_${user.uid}", "").orEmpty()
-                whatsapp = member?.whatsapp?.takeIf { it.isNotBlank() } ?: prefs.getString("whatsapp_${user.uid}", "").orEmpty()
-                invite = prefs.getString("invite_${user.uid}", "").orEmpty()
-                watchRoom(savedRoom)
-                tab = "Room"
-                message = if (signedInMessage == "You're connected") "Room restored" else signedInMessage
-            }
-            .addOnFailureListener {
-                restoring = false
-                clearSessionFor(user.uid)
-                message = "Could not restore room — please join again"
-            }
+                .addOnFailureListener {
+                    restoring = false
+                    message = "Could not restore room — please join again"
+                }
+        }
+
+        fun restoreFromTargets(rooms: List<SavedRoom>) {
+            db.child("users").child(userId).child("activeRoom").get()
+                .addOnSuccessListener { snap ->
+                    val cloudActive = snap.getValue(String::class.java).orEmpty()
+                    val localActive = prefs.getString("active_room_$userId", "").orEmpty()
+                    val legacyRoom = prefs.getString("roomId_$userId", "").orEmpty()
+                    val roomId = listOf(cloudActive, localActive, legacyRoom, rooms.firstOrNull()?.id.orEmpty())
+                        .firstOrNull { it.isNotBlank() }.orEmpty()
+                    restoreSavedRoom(roomId, rooms)
+                }
+                .addOnFailureListener {
+                    val roomId = listOf(
+                        prefs.getString("active_room_$userId", "").orEmpty(),
+                        prefs.getString("roomId_$userId", "").orEmpty(),
+                        rooms.firstOrNull()?.id.orEmpty()
+                    ).firstOrNull { it.isNotBlank() }.orEmpty()
+                    restoreSavedRoom(roomId, rooms)
+                }
+        }
+
+        loadSavedRooms { rooms ->
+            db.child("users").child(userId).child("roomMemberships").get()
+                .addOnSuccessListener { snap ->
+                    val membershipIds = snap.children.mapNotNull { it.key }.filter { it.isNotBlank() }
+                    val merged = (rooms + membershipIds.map { SavedRoom(it, "", "") }).distinctBy { it.id }
+                    restoreFromTargets(merged)
+                }
+                .addOnFailureListener { restoreFromTargets(rooms) }
+        }
     }
 
     LaunchedEffect(Unit) {
@@ -1009,10 +1141,8 @@ class MainActivity : ComponentActivity() {
             if (message.isNotBlank()) Text(message, color = Purple, style = MaterialTheme.typography.bodySmall)
             Card(Modifier.fillMaxWidth()) {
                 Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                    Text("Edit profile", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
-                    OutlinedTextField(profileName, { profileName = it }, label = { Text("Your name") }, modifier = Modifier.fillMaxWidth(), singleLine = true)
-                    OutlinedTextField(whatsapp, { whatsapp = it.filter { c -> c.isDigit() || c == '+' }.take(15) }, label = { Text("Mobile number") }, modifier = Modifier.fillMaxWidth(), singleLine = true)
-                    Button(onClick = { saveProfile() }, modifier = Modifier.fillMaxWidth()) { Text("Save profile") }
+                    Text("Your account", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
+                    Text(myName.ifBlank { "Member" }, style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold)
                     if (roomId.isNotBlank()) Text(if (isAdmin) "Room admin · $roomName" else "Room member · $roomName", color = Purple, style = MaterialTheme.typography.bodySmall)
                 }
             }
@@ -1087,8 +1217,6 @@ class MainActivity : ComponentActivity() {
                     }
                 }
             }
-            Text("Your personal spending this month", color = Color.Gray)
-            Text(money(personalTotal), style = MaterialTheme.typography.headlineMedium, color = Purple, fontWeight = FontWeight.Bold)
             Text("RoomMate Expenses · INR (₹)", color = Color.Gray)
             TextButton(onClick = { checkForUpdate(force = true) }, enabled = !updateBusy, modifier = Modifier.fillMaxWidth()) { Text(if (updateBusy) "Checking for updates..." else "Check for updates") }
             TextButton(onClick = {
