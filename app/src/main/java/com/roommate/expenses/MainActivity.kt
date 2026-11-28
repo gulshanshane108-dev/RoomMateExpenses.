@@ -1,9 +1,12 @@
 package com.roommate.expenses
 
+import android.app.DatePickerDialog
 import android.content.Context
 import android.os.Bundle
+import android.widget.DatePicker
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
+import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
@@ -34,9 +37,13 @@ import com.google.firebase.auth.FirebaseUser
 import com.google.firebase.database.*
 import java.text.SimpleDateFormat
 import java.util.*
+import org.json.JSONArray
+import org.json.JSONObject
 
 data class Member(val uid: String = "", val name: String = "", val whatsapp: String = "", val role: String = "member")
 data class Expense(val id: String = "", val memberUid: String = "", val memberName: String = "", val item: String = "", val amount: Double = 0.0, val category: String = "Other", val date: Long = System.currentTimeMillis())
+data class Note(val id: String = "", val text: String = "", val authorUid: String = "", val authorName: String = "", val date: Long = System.currentTimeMillis())
+data class SavedRoom(val id: String = "", val name: String = "", val invite: String = "")
 
 private val Purple = Color(0xFF6542B8)
 private val Pale = Color(0xFFF4F0FC)
@@ -45,6 +52,24 @@ private val EmailPattern = Regex("^[A-Za-z0-9+_.-]+@[A-Za-z0-9.-]+\\.[A-Za-z]{2,
 private fun isValidEmail(value: String) = EmailPattern.matches(value.trim())
 
 private fun isValidPhone(value: String) = value.trim().count { it.isDigit() } in 10..15
+
+private fun startOfDay(value: Long): Long = Calendar.getInstance().apply {
+    timeInMillis = value
+    set(Calendar.HOUR_OF_DAY, 0)
+    set(Calendar.MINUTE, 0)
+    set(Calendar.SECOND, 0)
+    set(Calendar.MILLISECOND, 0)
+}.timeInMillis
+
+private fun endOfDay(value: Long): Long = Calendar.getInstance().apply {
+    timeInMillis = value
+    set(Calendar.HOUR_OF_DAY, 23)
+    set(Calendar.MINUTE, 59)
+    set(Calendar.SECOND, 59)
+    set(Calendar.MILLISECOND, 999)
+}.timeInMillis
+
+private fun dateLabel(value: Long): String = SimpleDateFormat("dd MMM yyyy", Locale("en", "IN")).format(Date(value))
 
 private fun passwordIssue(value: String): String? = when {
     value.length < 8 -> "Password must be at least 8 characters"
@@ -112,14 +137,63 @@ class MainActivity : ComponentActivity() {
     var editing by remember { mutableStateOf<Expense?>(null) }
     var restoring by remember { mutableStateOf(false) }
     var personalMode by remember { mutableStateOf(false) }
+    var expenseDate by remember { mutableStateOf(System.currentTimeMillis()) }
+    var nameFilter by remember { mutableStateOf("") }
+    var dateFrom by remember { mutableStateOf<Long?>(null) }
+    var dateTo by remember { mutableStateOf<Long?>(null) }
+    var notes by remember { mutableStateOf(listOf<Note>()) }
+    var noteText by remember { mutableStateOf("") }
+    var savedRooms by remember { mutableStateOf(listOf<SavedRoom>()) }
+    var expenseToDelete by remember { mutableStateOf<Expense?>(null) }
+    var memberToRemove by remember { mutableStateOf<Member?>(null) }
+    var noteToDelete by remember { mutableStateOf<Note?>(null) }
 
     val context = LocalContext.current
     val prefs = remember { context.getSharedPreferences("room_session", Context.MODE_PRIVATE) }
+
+    fun savedRoomsKey() = "saved_rooms_$uid"
+
+    fun loadSavedRooms() {
+        if (uid.isBlank()) { savedRooms = emptyList(); return }
+        val raw = prefs.getString(savedRoomsKey(), "").orEmpty()
+        if (raw.isBlank()) { savedRooms = emptyList(); return }
+        try {
+            val arr = JSONArray(raw)
+            savedRooms = (0 until arr.length()).mapNotNull { i ->
+                val o = arr.optJSONObject(i) ?: return@mapNotNull null
+                SavedRoom(o.optString("id"), o.optString("name"), o.optString("invite"))
+            }.filter { it.id.isNotBlank() }
+        } catch (_: Exception) {
+            savedRooms = emptyList()
+        }
+    }
+
+    fun persistSavedRooms(rooms: List<SavedRoom>) {
+        if (uid.isBlank()) return
+        val arr = JSONArray()
+        rooms.forEach { r -> arr.put(JSONObject().put("id", r.id).put("name", r.name).put("invite", r.invite)) }
+        prefs.edit().putString(savedRoomsKey(), arr.toString()).apply()
+        savedRooms = rooms
+    }
+
+    fun saveRoomLocally(id: String, name: String, code: String) {
+        if (uid.isBlank() || id.isBlank()) return
+        val updated = savedRooms.toMutableList()
+        val index = updated.indexOfFirst { it.id == id }
+        val entry = SavedRoom(id, name.ifBlank { "My Room" }, code)
+        if (index >= 0) updated[index] = entry else updated.add(entry)
+        persistSavedRooms(updated)
+    }
+
+    fun removeSavedRoom(id: String) = persistSavedRooms(savedRooms.filterNot { it.id == id })
+
     var memberListener by remember { mutableStateOf<ValueEventListener?>(null) }
     var expenseListener by remember { mutableStateOf<ValueEventListener?>(null) }
     var personalListener by remember { mutableStateOf<ValueEventListener?>(null) }
+    var noteListener by remember { mutableStateOf<ValueEventListener?>(null) }
     var listeningRoom by remember { mutableStateOf("") }
     var listeningPersonal by remember { mutableStateOf(false) }
+    var listeningNotes by remember { mutableStateOf("") }
 
     fun clearSessionFor(userId: String) {
         if (userId.isBlank()) return
@@ -180,9 +254,21 @@ class MainActivity : ComponentActivity() {
         personalListener = null
     }
 
+    fun detachNotesListener() {
+        if (listeningNotes.isNotBlank()) {
+            noteListener?.let { listener ->
+                if (listeningNotes == "personal") db.child("users").child(uid).child("personalNotes").removeEventListener(listener)
+                else db.child("rooms").child(listeningNotes).child("notes").removeEventListener(listener)
+            }
+        }
+        listeningNotes = ""
+        noteListener = null
+    }
+
     fun detachAllListeners() {
         detachRoomListeners()
         detachPersonalListener()
+        detachNotesListener()
     }
 
     fun watchPersonal() {
@@ -193,6 +279,7 @@ class MainActivity : ComponentActivity() {
         myName = ""
         whatsapp = ""
         members = emptyList()
+        notes = emptyList()
         loadProfile()
         listeningPersonal = true
         personalListener = object : ValueEventListener {
@@ -200,6 +287,12 @@ class MainActivity : ComponentActivity() {
             override fun onCancelled(e: DatabaseError) { message = e.message }
         }
         db.child("users").child(uid).child("personalExpenses").addValueEventListener(personalListener!!)
+        listeningNotes = "personal"
+        noteListener = object : ValueEventListener {
+            override fun onDataChange(s: DataSnapshot) { notes = s.children.mapNotNull { it.getValue(Note::class.java) }.sortedByDescending { it.date } }
+            override fun onCancelled(e: DatabaseError) { message = e.message }
+        }
+        db.child("users").child(uid).child("personalNotes").addValueEventListener(noteListener!!)
     }
 
     fun enterPersonalMode() {
@@ -218,6 +311,7 @@ class MainActivity : ComponentActivity() {
         personalMode = false
         listeningRoom = id
         roomId = id
+        notes = emptyList()
         saveRoomSession()
         db.child("rooms").child(id).child("info").child("name").get().addOnSuccessListener { roomName = it.getValue(String::class.java) ?: "My Room" }
         memberListener = object : ValueEventListener {
@@ -230,6 +324,31 @@ class MainActivity : ComponentActivity() {
         }
         db.child("rooms").child(id).child("members").addValueEventListener(memberListener!!)
         db.child("rooms").child(id).child("expenses").addValueEventListener(expenseListener!!)
+        listeningNotes = id
+        noteListener = object : ValueEventListener {
+            override fun onDataChange(s: DataSnapshot) { notes = s.children.mapNotNull { it.getValue(Note::class.java) }.sortedByDescending { it.date } }
+            override fun onCancelled(e: DatabaseError) { message = e.message }
+        }
+        db.child("rooms").child(id).child("notes").addValueEventListener(noteListener!!)
+    }
+
+    fun openSavedRoom(room: SavedRoom) {
+        if (uid.isBlank()) return
+        db.child("rooms").child(room.id).child("members").child(uid).get()
+            .addOnSuccessListener { snap ->
+                if (!snap.exists()) {
+                    removeSavedRoom(room.id)
+                    message = "You are no longer a member of ${room.name}"
+                    return@addOnSuccessListener
+                }
+                val member = snap.getValue(Member::class.java)
+                myName = member?.name?.takeIf { it.isNotBlank() } ?: myName
+                whatsapp = member?.whatsapp ?: whatsapp
+                invite = room.invite
+                watchRoom(room.id)
+                message = "Opened ${room.name}"
+            }
+            .addOnFailureListener { message = it.message ?: "Could not open saved room" }
     }
 
     DisposableEffect(Unit) {
@@ -239,6 +358,7 @@ class MainActivity : ComponentActivity() {
     fun restoreRoom(user: FirebaseUser, signedInMessage: String = "You're connected") {
         uid = user.uid
         signedIn = true
+        loadSavedRooms()
         loadProfile()
         val savedRoom = prefs.getString("roomId_${user.uid}", "").orEmpty()
         restoring = savedRoom.isNotBlank()
@@ -307,6 +427,7 @@ class MainActivity : ComponentActivity() {
             } else {
                 uid = user.uid
                 signedIn = true
+                loadSavedRooms()
             }
         }
         auth.addAuthStateListener(listener)
@@ -421,12 +542,17 @@ class MainActivity : ComponentActivity() {
     fun createRoom() {
         if (uid.isBlank() || roomName.isBlank()) { message = "Enter a room name"; return }
         loadProfile {
+            val name = roomName.trim()
             val code = (100000..999999).random().toString(); val id = db.child("rooms").push().key ?: return@loadProfile
             val member = Member(uid, myName.trim().ifBlank { "Member" }, whatsapp.trim(), "admin")
-            db.child("rooms").child(id).child("info").setValue(mapOf("name" to roomName.trim(), "createdBy" to uid, "createdAt" to ServerValue.TIMESTAMP)).addOnSuccessListener {
+            db.child("rooms").child(id).child("info").setValue(mapOf("name" to name, "createdBy" to uid, "createdAt" to ServerValue.TIMESTAMP)).addOnSuccessListener {
                 db.child("rooms").child(id).child("members").child(uid).setValue(member).addOnSuccessListener {
-                    db.child("inviteCodes").child(code).setValue(id).addOnSuccessListener { invite = code; watchRoom(id); message = "Room created successfully" }
-                        .addOnFailureListener { message = it.message ?: "Could not create invite code" }
+                    db.child("inviteCodes").child(code).setValue(id).addOnSuccessListener {
+                        invite = code
+                        saveRoomLocally(id, name, code)
+                        watchRoom(id)
+                        message = "Room created successfully"
+                    }.addOnFailureListener { message = it.message ?: "Could not create invite code" }
                 }.addOnFailureListener { message = it.message ?: "Could not add admin" }
             }.addOnFailureListener { message = it.message ?: "Could not create room" }
         }
@@ -439,14 +565,74 @@ class MainActivity : ComponentActivity() {
                 val id = snap.getValue(String::class.java)
                 if (id.isNullOrBlank()) { message = "That invite code was not found"; return@addOnSuccessListener }
                 val member = Member(uid, myName.trim().ifBlank { "Member" }, whatsapp.trim(), "member")
-                db.child("rooms").child(id).child("members").child(uid).setValue(member).addOnSuccessListener { watchRoom(id); message = "Welcome to the room!" }.addOnFailureListener { message = it.message ?: "Could not join room" }
+                db.child("rooms").child(id).child("members").child(uid).setValue(member).addOnSuccessListener {
+                    db.child("rooms").child(id).child("info").child("name").get().addOnSuccessListener { nameSnap ->
+                        val name = nameSnap.getValue(String::class.java) ?: "My Room"
+                        saveRoomLocally(id, name, invite)
+                        watchRoom(id)
+                        message = "Welcome to $name!"
+                    }.addOnFailureListener {
+                        saveRoomLocally(id, "My Room", invite)
+                        watchRoom(id)
+                        message = "Welcome to the room!"
+                    }
+                }.addOnFailureListener { message = it.message ?: "Could not join room" }
             }.addOnFailureListener { message = it.message ?: "Could not check invite code" }
         }
     }
+    fun openDatePicker(initial: Long, onPicked: (Long) -> Unit) {
+        val c = Calendar.getInstance().apply { timeInMillis = initial }
+        DatePickerDialog(
+            context,
+            { _: DatePicker, year: Int, month: Int, day: Int ->
+                val picked = Calendar.getInstance().apply {
+                    set(year, month, day, 12, 0, 0)
+                    set(Calendar.MILLISECOND, 0)
+                }.timeInMillis
+                onPicked(picked)
+            },
+            c.get(Calendar.YEAR),
+            c.get(Calendar.MONTH),
+            c.get(Calendar.DAY_OF_MONTH)
+        ).apply {
+            datePicker.maxDate = System.currentTimeMillis()
+            show()
+        }
+    }
+
     fun expenseRef() = if (personalMode) db.child("users").child(uid).child("personalExpenses") else db.child("rooms").child(roomId).child("expenses")
 
+    fun noteRef() = if (personalMode) db.child("users").child(uid).child("personalNotes") else db.child("rooms").child(roomId).child("notes")
+
     fun deleteExpense(e: Expense) {
-        expenseRef().child(e.id).removeValue().addOnSuccessListener { message = "Expense deleted" }.addOnFailureListener { message = it.message ?: "Could not delete expense" }
+        if (e.memberUid != uid) { message = "Only the person who added an expense can delete it"; expenseToDelete = null; return }
+        expenseRef().child(e.id).removeValue()
+            .addOnSuccessListener { message = "Expense deleted"; expenseToDelete = null }
+            .addOnFailureListener { message = it.message ?: "Could not delete expense"; expenseToDelete = null }
+    }
+
+    fun removeMember(m: Member) {
+        if (!isAdmin) { message = "Only the room admin can remove members"; memberToRemove = null; return }
+        db.child("rooms").child(roomId).child("members").child(m.uid).removeValue()
+            .addOnSuccessListener { message = "${m.name} removed from the room"; memberToRemove = null }
+            .addOnFailureListener { message = it.message ?: "Could not remove member"; memberToRemove = null }
+    }
+
+    fun saveNote() {
+        if (noteText.isBlank()) { message = "Enter a note"; return }
+        val id = noteRef().push().key ?: return
+        val authorName = if (personalMode) (myName.ifBlank { "You" }) else myName.ifBlank { "Member" }
+        val note = Note(id, noteText.trim(), uid, authorName, System.currentTimeMillis())
+        noteRef().child(id).setValue(note)
+            .addOnSuccessListener { noteText = ""; message = if (personalMode) "Personal note saved" else "Room note saved" }
+            .addOnFailureListener { message = it.message ?: "Could not save note" }
+    }
+
+    fun deleteNote(note: Note) {
+        if (note.authorUid != uid) { message = "Only the author can delete a note"; noteToDelete = null; return }
+        noteRef().child(note.id).removeValue()
+            .addOnSuccessListener { message = "Note deleted"; noteToDelete = null }
+            .addOnFailureListener { message = it.message ?: "Could not delete note"; noteToDelete = null }
     }
 
     fun saveExpense() {
@@ -456,9 +642,10 @@ class MainActivity : ComponentActivity() {
         val old = editing
         val id = old?.id ?: ref.push().key ?: return
         val memberName = old?.memberName ?: if (personalMode) "You" else myName
-        val record = Expense(id, old?.memberUid ?: uid, memberName, item.trim(), v, category, old?.date ?: System.currentTimeMillis())
+        val chosenDate = if (old != null) expenseDate else startOfDay(expenseDate)
+        val record = Expense(id, old?.memberUid ?: uid, memberName, item.trim(), v, category, chosenDate)
         ref.child(id).setValue(record).addOnSuccessListener {
-            item = ""; amount = ""; editing = null
+            item = ""; amount = ""; editing = null; expenseDate = System.currentTimeMillis()
             message = when {
                 personalMode && old == null -> "Personal expense added"
                 personalMode -> "Personal expense updated"
@@ -483,7 +670,13 @@ class MainActivity : ComponentActivity() {
 
     val cal = Calendar.getInstance(); val monthExpenses = expenses.filter { val c = Calendar.getInstance().apply { timeInMillis = it.date }; c.get(Calendar.YEAR) == cal.get(Calendar.YEAR) && c.get(Calendar.MONTH) == cal.get(Calendar.MONTH) }
     val total = monthExpenses.sumOf { it.amount }; val personalTotal = monthExpenses.filter { it.memberUid == uid }.sumOf { it.amount }
+    val filteredExpenses = expenses.filter { e ->
+        (nameFilter.isBlank() || e.item.contains(nameFilter.trim(), true)) &&
+            (dateFrom == null || e.date >= startOfDay(dateFrom!!)) &&
+            (dateTo == null || e.date <= endOfDay(dateTo!!))
+    }
     fun money(n: Double) = "₹" + String.format(Locale("en", "IN"), "%,.2f", n)
+    fun clearExpenseFilters() { nameFilter = ""; dateFrom = null; dateTo = null; message = "Filters cleared" }
 
     if (restoring) {
         Column(Modifier.fillMaxSize().background(Pale).padding(22.dp), verticalArrangement = Arrangement.Center, horizontalAlignment = Alignment.CenterHorizontally) {
@@ -531,6 +724,12 @@ class MainActivity : ComponentActivity() {
                     Text("Join a room", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
                     OutlinedTextField(invite, { invite = it.filter(Char::isDigit).take(6) }, label = { Text("6-digit room code") }, keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number), modifier = Modifier.fillMaxWidth(), singleLine = true)
                     OutlinedButton(onClick = { joinRoom() }, enabled = uid.isNotBlank(), modifier = Modifier.fillMaxWidth().height(50.dp)) { Text("Join with invite code") }
+                    if (savedRooms.isNotEmpty()) {
+                        Text("Your saved rooms", style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.Bold, modifier = Modifier.padding(top = 8.dp))
+                        savedRooms.forEach { room ->
+                            OutlinedButton(onClick = { openSavedRoom(room) }, modifier = Modifier.fillMaxWidth()) { Text("Open ${room.name}") }
+                        }
+                    }
                     TextButton(onClick = { enterPersonalMode() }, enabled = uid.isNotBlank(), modifier = Modifier.fillMaxWidth()) { Text("Continue without a room — personal expenses") }
                 }
             }
@@ -559,27 +758,71 @@ class MainActivity : ComponentActivity() {
             when (tab) {
                 "Home" -> LazyColumn(Modifier.weight(1f).padding(horizontal = 16.dp), contentPadding = PaddingValues(vertical = 16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
                     item { Card(colors = CardDefaults.cardColors(containerColor = Pale), shape = RoundedCornerShape(20.dp)) { Column(Modifier.padding(18.dp)) { Text(if (personalMode) "YOUR SPENDING · THIS MONTH" else "ROOM SPENDING · THIS MONTH", color = Purple, style = MaterialTheme.typography.labelMedium, fontWeight = FontWeight.Bold); Text(money(total), style = MaterialTheme.typography.headlineLarge, fontWeight = FontWeight.ExtraBold, color = Purple); Text("${monthExpenses.size} expense entries", color = Color.DarkGray) } } }
+                    if (!personalMode) {
+                        item { Card(shape = RoundedCornerShape(20.dp)) { Column(Modifier.padding(18.dp)) { Text("Spending by category · this month", fontWeight = FontWeight.Bold); Spacer(Modifier.height(12.dp)); CategoryPieChart(monthExpenses.groupBy { it.category }.mapValues { entry -> entry.value.sumOf { e -> e.amount } }, ::money) } } }
+                    }
                     item { Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) { SummaryTile("Your spending", money(personalTotal), Modifier.weight(1f)); if (personalMode) SummaryTile("Entries", monthExpenses.size.toString(), Modifier.weight(1f)) else SummaryTile("Members", members.size.toString(), Modifier.weight(1f)) } }
                     item { Text("Recent expenses", style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold) }
-                    items(expenses.take(5), key = { it.id }) { e -> ExpenseRow(e, ::money, onEdit = { if (e.memberUid == uid || isAdmin) { editing = e; item = e.item; amount = e.amount.toString(); category = e.category; tab = "Expenses" } }, onDelete = { if (e.memberUid == uid || isAdmin) deleteExpense(e) }) }
+                    items(expenses.take(5), key = { it.id }) { e -> ExpenseRow(e, ::money, e.memberUid == uid, onEdit = { editing = e; item = e.item; amount = e.amount.toString(); category = e.category; expenseDate = e.date; tab = "Expenses" }, onDelete = { expenseToDelete = e }) }
                     if (expenses.isEmpty()) item { EmptyState("No expenses yet", if (personalMode) "Add your first personal expense to get started." else "Add your first shared expense to get started.") }
                 }
-                "Expenses" -> Column(Modifier.weight(1f).padding(16.dp)) {
-                    Text(if (editing == null) "Add an expense" else "Edit expense", style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold)
-                    Spacer(Modifier.height(8.dp))
-                    OutlinedTextField(item, { item = it }, label = { Text("What did you spend on?") }, modifier = Modifier.fillMaxWidth(), singleLine = true)
-                    OutlinedTextField(amount, { amount = it.filter { c -> c.isDigit() || c == '.' }.take(10) }, label = { Text("Amount (₹)") }, keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Decimal), modifier = Modifier.fillMaxWidth(), singleLine = true)
-                    Text("Category", modifier = Modifier.padding(top = 12.dp, bottom = 6.dp), fontWeight = FontWeight.SemiBold)
-                    Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) { listOf("Food", "Rent", "Bills", "Travel").forEach { c -> FilterChip(selected = category == c, onClick = { category = c }, label = { Text(c) }) } }
-                    Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) { listOf("Shopping", "Other").forEach { c -> FilterChip(selected = category == c, onClick = { category = c }, label = { Text(c) }) } }
-                    Button(onClick = { saveExpense() }, modifier = Modifier.fillMaxWidth().padding(top = 12.dp).height(50.dp)) { Text(if (editing == null) "Save expense" else "Update expense") }
-                    if (editing != null) TextButton(onClick = { editing = null; item = ""; amount = "" }) { Text("Cancel editing") }
-                    Spacer(Modifier.height(12.dp)); Text("All expenses", style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold)
-                    LazyColumn(Modifier.weight(1f)) { items(expenses, key = { it.id }) { e -> ExpenseRow(e, ::money, onEdit = { if (e.memberUid == uid || isAdmin) { editing = e; item = e.item; amount = e.amount.toString(); category = e.category } }, onDelete = { if (e.memberUid == uid || isAdmin) deleteExpense(e) }) } }
+                "Expenses" -> LazyColumn(Modifier.weight(1f).padding(horizontal = 16.dp), contentPadding = PaddingValues(vertical = 16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                    item { Text(if (editing == null) "Add an expense" else "Edit expense", style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold) }
+                    item { OutlinedTextField(item, { item = it }, label = { Text("What did you spend on?") }, modifier = Modifier.fillMaxWidth(), singleLine = true) }
+                    item { OutlinedTextField(amount, { amount = it.filter { c -> c.isDigit() || c == '.' }.take(10) }, label = { Text("Amount (₹)") }, keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Decimal), modifier = Modifier.fillMaxWidth(), singleLine = true) }
+                    item {
+                        Column {
+                            Text("Expense date", fontWeight = FontWeight.SemiBold)
+                            OutlinedButton(onClick = { openDatePicker(expenseDate) { expenseDate = it } }, modifier = Modifier.fillMaxWidth()) { Text(dateLabel(expenseDate)) }
+                            TextButton(onClick = { expenseDate = System.currentTimeMillis() }, modifier = Modifier.fillMaxWidth()) { Text("Use today") }
+                        }
+                    }
+                    item {
+                        Column {
+                            Text("Category", modifier = Modifier.padding(bottom = 6.dp), fontWeight = FontWeight.SemiBold)
+                            Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) { listOf("Food", "Rent", "Bills", "Travel").forEach { c -> FilterChip(selected = category == c, onClick = { category = c }, label = { Text(c) }) } }
+                            Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) { listOf("Shopping", "Other").forEach { c -> FilterChip(selected = category == c, onClick = { category = c }, label = { Text(c) }) } }
+                        }
+                    }
+                    item { Button(onClick = { saveExpense() }, modifier = Modifier.fillMaxWidth().height(50.dp)) { Text(if (editing == null) "Save expense" else "Update expense") } }
+                    if (editing != null) item { TextButton(onClick = { editing = null; item = ""; amount = ""; expenseDate = System.currentTimeMillis() }, modifier = Modifier.fillMaxWidth()) { Text("Cancel editing") } }
+                    item {
+                        Card(shape = RoundedCornerShape(16.dp)) {
+                            Column(Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                                Text("Filter expenses", fontWeight = FontWeight.Bold)
+                                OutlinedTextField(nameFilter, { nameFilter = it }, label = { Text("Search by expense name") }, modifier = Modifier.fillMaxWidth(), singleLine = true)
+                                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                                    OutlinedButton(onClick = { openDatePicker(dateFrom ?: System.currentTimeMillis()) { picked -> val day = startOfDay(picked); dateFrom = day; if (dateTo != null && day > dateTo!!) dateTo = null } }, modifier = Modifier.weight(1f)) { Text(dateFrom?.let { "From ${dateLabel(it)}" } ?: "From date") }
+                                    OutlinedButton(onClick = { openDatePicker(dateTo ?: System.currentTimeMillis()) { picked -> val day = startOfDay(picked); if (dateFrom != null && day < dateFrom!!) dateFrom = null; dateTo = day } }, modifier = Modifier.weight(1f)) { Text(dateTo?.let { "To ${dateLabel(it)}" } ?: "To date") }
+                                }
+                                TextButton(onClick = { clearExpenseFilters() }, modifier = Modifier.fillMaxWidth()) { Text("Clear filters") }
+                            }
+                        }
+                    }
+                    item { Text("All expenses (${filteredExpenses.size})", style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold) }
+                    items(filteredExpenses, key = { it.id }) { e -> ExpenseRow(e, ::money, e.memberUid == uid, onEdit = { editing = e; item = e.item; amount = e.amount.toString(); category = e.category; expenseDate = e.date }, onDelete = { expenseToDelete = e }) }
+                    if (filteredExpenses.isEmpty()) item { EmptyState("No matching expenses", "Try a different name or date range.") }
                 }
                 "Members" -> LazyColumn(Modifier.weight(1f).padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp), contentPadding = PaddingValues(bottom = 16.dp)) {
                     item { Text("Room members", style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold); Text("Everyone in this room can view shared expenses.", color = Color.Gray) }
-                    items(members, key = { it.uid }) { m -> Card(shape = RoundedCornerShape(16.dp)) { Row(Modifier.fillMaxWidth().padding(14.dp), verticalAlignment = Alignment.CenterVertically) { Column(Modifier.weight(1f)) { Text(m.name + if (m.uid == uid) " (You)" else "", fontWeight = FontWeight.SemiBold); Text(m.whatsapp, color = Color.Gray, style = MaterialTheme.typography.bodySmall) }; if (m.role == "admin") AssistChip(onClick = {}, label = { Text("Admin") }) else if (isAdmin) TextButton(onClick = { db.child("rooms").child(roomId).child("members").child(m.uid).removeValue().addOnSuccessListener { message = "Member removed" } }) { Text("Remove", color = Color.Red) } } } }
+                    items(members, key = { it.uid }) { m -> Card(shape = RoundedCornerShape(16.dp)) { Row(Modifier.fillMaxWidth().padding(14.dp), verticalAlignment = Alignment.CenterVertically) { Column(Modifier.weight(1f)) { Text(m.name + if (m.uid == uid) " (You)" else "", fontWeight = FontWeight.SemiBold); Text(m.whatsapp, color = Color.Gray, style = MaterialTheme.typography.bodySmall) }; if (m.role == "admin") AssistChip(onClick = {}, label = { Text("Admin") }) else if (isAdmin) TextButton(onClick = { memberToRemove = m }) { Text("Remove", color = Color.Red) } } } }
+                }
+                "Notes" -> LazyColumn(Modifier.weight(1f).padding(horizontal = 16.dp), contentPadding = PaddingValues(vertical = 16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                    item { Text("Notebook", style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold) }
+                    item { Text(if (personalMode) "Private notes for your account." else "Shared notes for everyone in this room.", color = Color.Gray) }
+                    item { OutlinedTextField(noteText, { noteText = it }, label = { Text("Write a note") }, modifier = Modifier.fillMaxWidth(), minLines = 3) }
+                    item { Button(onClick = { saveNote() }, modifier = Modifier.fillMaxWidth().height(50.dp)) { Text("Save note") } }
+                    item { Text("Saved notes", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold) }
+                    items(notes, key = { it.id }) { n ->
+                        Card(shape = RoundedCornerShape(16.dp)) {
+                            Column(Modifier.fillMaxWidth().padding(14.dp)) {
+                                Text(n.text)
+                                Text("${n.authorName} · ${dateLabel(n.date)}", color = Color.Gray, style = MaterialTheme.typography.bodySmall)
+                                if (n.authorUid == uid) TextButton(onClick = { noteToDelete = n }) { Text("Delete", color = Color.Red) }
+                            }
+                        }
+                    }
+                    if (notes.isEmpty()) item { EmptyState("No notes yet", "Write the first note to get started.") }
                 }
                 else -> Column(Modifier.weight(1f).padding(20.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
                     Text("Your profile", style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold)
@@ -658,7 +901,35 @@ class MainActivity : ComponentActivity() {
                     if (!personalMode) TextButton(onClick = { clearRoomSession(); detachAllListeners(); roomId = ""; invite = ""; expenses = emptyList(); members = emptyList(); tab = "Home"; message = "Left room on this device" }) { Text("Leave this room on this device") }
                 }
             }
-            NavigationBar(containerColor = Color.White) { (if (personalMode) listOf("Home", "Expenses", "Profile") else listOf("Home", "Expenses", "Members", "Profile")).forEach { t -> NavigationBarItem(selected = tab == t, onClick = { tab = t }, icon = { Text(when (t) { "Home" -> "⌂"; "Expenses" -> "₹"; "Members" -> "♙"; else -> "●" }, color = if (tab == t) Purple else Color.Gray) }, label = { Text(t) }) } }
+            NavigationBar(containerColor = Color.White) { (if (personalMode) listOf("Home", "Expenses", "Notes", "Profile") else listOf("Home", "Expenses", "Members", "Notes", "Profile")).forEach { t -> NavigationBarItem(selected = tab == t, onClick = { tab = t }, icon = { Text(when (t) { "Home" -> "⌂"; "Expenses" -> "₹"; "Members" -> "♙"; "Notes" -> "N"; else -> "●" }, color = if (tab == t) Purple else Color.Gray) }, label = { Text(t) }) } }
+        }
+
+        expenseToDelete?.let { e ->
+            AlertDialog(
+                onDismissRequest = { expenseToDelete = null },
+                title = { Text("Delete expense?") },
+                text = { Text("Delete \"${e.item}\" of ${money(e.amount)}? This cannot be undone.") },
+                confirmButton = { TextButton(onClick = { deleteExpense(e) }) { Text("Delete", color = Color.Red) } },
+                dismissButton = { TextButton(onClick = { expenseToDelete = null }) { Text("Cancel") } }
+            )
+        }
+        memberToRemove?.let { m ->
+            AlertDialog(
+                onDismissRequest = { memberToRemove = null },
+                title = { Text("Remove member?") },
+                text = { Text("Remove ${m.name} from this room? They will no longer be able to add expenses.") },
+                confirmButton = { TextButton(onClick = { removeMember(m) }) { Text("Remove", color = Color.Red) } },
+                dismissButton = { TextButton(onClick = { memberToRemove = null }) { Text("Cancel") } }
+            )
+        }
+        noteToDelete?.let { n ->
+            AlertDialog(
+                onDismissRequest = { noteToDelete = null },
+                title = { Text("Delete note?") },
+                text = { Text("This note will be permanently removed.") },
+                confirmButton = { TextButton(onClick = { deleteNote(n) }) { Text("Delete", color = Color.Red) } },
+                dismissButton = { TextButton(onClick = { noteToDelete = null }) { Text("Cancel") } }
+            )
         }
     }
 }
@@ -734,8 +1005,65 @@ class MainActivity : ComponentActivity() {
 
 @Composable private fun SummaryTile(title: String, value: String, modifier: Modifier = Modifier) { Card(modifier, shape = RoundedCornerShape(18.dp)) { Column(Modifier.padding(14.dp)) { Text(title, color = Color.Gray, style = MaterialTheme.typography.labelMedium); Text(value, color = Purple, style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold) } } }
 
-@Composable private fun ExpenseRow(e: Expense, money: (Double) -> String, onEdit: () -> Unit, onDelete: () -> Unit) {
-    Card(shape = RoundedCornerShape(16.dp), modifier = Modifier.padding(vertical = 4.dp)) { Column(Modifier.padding(horizontal = 14.dp, vertical = 10.dp)) { Row(verticalAlignment = Alignment.CenterVertically) { Column(Modifier.weight(1f)) { Text(e.item, fontWeight = FontWeight.SemiBold); Text("${e.memberName} · ${e.category}", color = Color.Gray, style = MaterialTheme.typography.bodySmall) }; Text(money(e.amount), color = Purple, fontWeight = FontWeight.Bold) }; Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) { TextButton(onClick = onEdit) { Text("Edit") }; TextButton(onClick = onDelete) { Text("Delete", color = Color.Red) } } } }
+private val PieColors = listOf(
+    Color(0xFF6542B8), Color(0xFF42A5F5), Color(0xFF26A69A),
+    Color(0xFFEF6C00), Color(0xFFEC407A), Color(0xFF7E57C2)
+)
+
+@Composable private fun CategoryPieChart(totals: Map<String, Double>, money: (Double) -> String) {
+    val entries = totals.filter { it.value > 0 }.toList().sortedByDescending { it.second }
+    val sum = entries.sumOf { it.second }
+    if (sum <= 0.0) {
+        Text("No expenses this month yet", color = Color.Gray, style = MaterialTheme.typography.bodySmall)
+        return
+    }
+    Row(verticalAlignment = Alignment.CenterVertically) {
+        Canvas(Modifier.size(132.dp)) {
+            var start = -90f
+            entries.forEachIndexed { index, entry ->
+                val sweep = 360f * (entry.second / sum).toFloat()
+                drawArc(
+                    color = PieColors[index % PieColors.size],
+                    startAngle = start,
+                    sweepAngle = sweep,
+                    useCenter = true
+                )
+                start += sweep
+            }
+            drawCircle(color = Color.White, radius = size.minDimension * 0.25f)
+        }
+        Spacer(Modifier.width(12.dp))
+        Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+            entries.take(6).forEachIndexed { index, entry ->
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Box(Modifier.size(10.dp).background(PieColors[index % PieColors.size], RoundedCornerShape(2.dp)))
+                    Spacer(Modifier.width(6.dp))
+                    Text(entry.first, modifier = Modifier.weight(1f), style = MaterialTheme.typography.bodySmall)
+                    Text(money(entry.second), style = MaterialTheme.typography.bodySmall, fontWeight = FontWeight.SemiBold)
+                }
+            }
+        }
+    }
+}
+
+@Composable private fun ExpenseRow(e: Expense, money: (Double) -> String, canManage: Boolean, onEdit: () -> Unit, onDelete: () -> Unit) {
+    Card(shape = RoundedCornerShape(16.dp), modifier = Modifier.padding(vertical = 4.dp)) {
+        Column(Modifier.padding(horizontal = 14.dp, vertical = 10.dp)) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Column(Modifier.weight(1f)) {
+                    Text(e.item, fontWeight = FontWeight.SemiBold)
+                    Text("${e.memberName} · ${e.category} · ${dateLabel(e.date)}", color = Color.Gray, style = MaterialTheme.typography.bodySmall)
+                }
+                Text(money(e.amount), color = Purple, fontWeight = FontWeight.Bold)
+            }
+            if (canManage) {
+                Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
+                    TextButton(onClick = onEdit) { Text("Edit") }
+                    TextButton(onClick = onDelete) { Text("Delete", color = Color.Red) }
+                }
+            }
+        }
+    }
 }
 
 @Composable private fun EmptyState(title: String, body: String) { Column(Modifier.fillMaxWidth().padding(24.dp), horizontalAlignment = Alignment.CenterHorizontally) { Text(title, fontWeight = FontWeight.Bold); Text(body, color = Color.Gray, style = MaterialTheme.typography.bodySmall) } }
